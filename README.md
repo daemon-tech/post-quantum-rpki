@@ -7,4 +7,4 @@ This is  **public experiment** that actually re-signs a statistically complete s
 
 Results (preliminary, live updating):
 
-License: MIT – reuse everything, just cite me (see CITATION.cff)
+License: MIT -> reuse everything, just cite me (see CITATION.cff)
