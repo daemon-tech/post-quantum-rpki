@@ -1,0 +1,4 @@
+data/
+results/raw/
+*.tal
+*.tar.gz
