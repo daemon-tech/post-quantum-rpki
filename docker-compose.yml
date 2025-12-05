@@ -1,0 +1,14 @@
+services:
+  pq-rpki:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pq-rpki:latest
+    volumes:
+      - .:/work
+      - ./data:/data
+    working_dir: /work
+    stdin_open: true
+    tty: true
+    environment:
+      - PYTHONUNBUFFERED=1

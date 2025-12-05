@@ -1,13 +1,31 @@
 # === BIG DATA & TEMP FOLDERS ===
-data/
+data/original/
+data/subset/
+data/signed/
 liboqs/
 tools/
 venv/
 
+# === GENERATED RESULTS ===
+# Keep these files visible in repository:
+# - results.csv, results.json (data)
+# - *.png (visualizations)
+# - results.tex (LaTeX table)
+# - RESULTS.md (report)
+# Only ignore if they're in subdirectories
+# results/
+# output/
+
 # === DOCKER & WINDOWS JUNK ===
-docker-compose.yml
-*.bat
+# Keep docker-compose.yml and *.bat for reproducibility
 fast-subset.sh
+
+# === PYTHON ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 
 # === GIT SYSTEM FILES ===
 .gitattributes
