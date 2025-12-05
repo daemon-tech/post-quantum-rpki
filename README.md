@@ -94,7 +94,7 @@ If you use this dataset or code, please cite:
   year = {2025},
   month = {December},
   version = {1.0.0},
-  url = {https://github.com/daemon-tech/pq-rpki-2025}
+  url = {https://github.com/daemon-tech/post-quantum-rpki}
 }
 ```
 
