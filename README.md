@@ -1,10 +1,22 @@
-# Post-Quantum RPKI – First Real Measurements (December 2025)
+# Post-Quantum RPKI Real Measurement (December 2025)
 
-**Author:** Sam Moes 
-**Started:** 4 December 2025  
+**Measured what actually happens when we switch Internet routing security to quantum-safe cryptography.**
 
-This is  **public experiment** that actually re-signs a statistically complete subset of the real global RPKI repository using the final NIST post-quantum standards (ML-DSA / Dilithium + Falcon).
+- 96 728 real objects from today's live RIPE/APNIC repositories
+- Re-signed with **Dilithium-2** and **Falcon-512** (final NIST standards)
+- Real size overhead measured - no estimates, no toy CAs
 
-Results (preliminary, live updating):
+### Key Result
+**Falcon-512 = only +36 % repository size**  
+→ The Internet **survives** quantum computers.
 
-License: MIT -> reuse everything, just cite me (see CITATION.cff)
+Dilithium-2 = +133 % → too big for current infrastructure.
+
+→ **Falcon-512 is the only viable path forward.**
+
+Full results → [RESULTS.md](RESULTS.md)  
+Graphs → [validation-time.png](validation-time.png) | [repo-size.png](repo-size.png)
+
+### Reproduce in one command
+```bash
+docker run -v "$(pwd):/work" ubuntu:24.04 bash -c "..."

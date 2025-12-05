@@ -1,4 +1,18 @@
+# === BIG DATA & TEMP FOLDERS ===
 data/
-results/raw/
-*.tal
-*.tar.gz
+liboqs/
+tools/
+venv/
+
+# === DOCKER & WINDOWS JUNK ===
+docker-compose.yml
+*.bat
+fast-subset.sh
+
+# === GIT SYSTEM FILES ===
+.gitattributes
+
+# === OS GARBAGE ===
+.DS_Store
+Thumbs.db
+Desktop.ini
