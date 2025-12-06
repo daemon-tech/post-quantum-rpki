@@ -227,10 +227,10 @@ for name, alg_config in available_algos.items():
         classical_alg, pq_alg = alg_config
         try:
             signer = Signature(pq_alg)
-            public_key = signer.generate_keypair()
-            key_file = dir_out / ".public_key"
-            key_file.write_bytes(public_key)
+            # Generate keypair per file for scientific accuracy (realistic scenario)
+            # Store algorithm info for keypair generation
             print(f"✓ Hybrid signer initialized: {classical_alg} + {pq_alg}")
+            print(f"  Note: Generating unique keypair per file for scientific accuracy")
         except Exception as e:
             print(f"✗ ERROR: Failed to initialize hybrid signer: {e}")
             print(f"  Skipping {name}")
@@ -239,10 +239,9 @@ for name, alg_config in available_algos.items():
         # Regular PQ algorithm
         try:
             signer = Signature(alg_config)
-            public_key = signer.generate_keypair()
-            key_file = dir_out / ".public_key"
-            key_file.write_bytes(public_key)
+            # Generate keypair per file for scientific accuracy (realistic scenario)
             print(f"✓ Signer initialized: {alg_config}")
+            print(f"  Note: Generating unique keypair per file for scientific accuracy")
         except Exception as e:
             print(f"✗ ERROR: Failed to initialize signer: {e}")
             print(f"  Skipping {name}")
@@ -276,25 +275,27 @@ for name, alg_config in available_algos.items():
             output_file.parent.mkdir(parents=True, exist_ok=True)
             
             # Skip if already processed
+            # Do not include skipped files in size totals - only count files processed in this run
             if output_file.exists():
-                try:
-                    total_size += output_file.stat().st_size
-                    skipped_count += 1
-                except Exception:
-                    # File might be corrupted, reprocess it
-                    pass
+                skipped_count += 1
                 continue
             
             # Process file with error handling
+            file_public_key = None  # Initialize for scope
             try:
                 data = f.read_bytes()
                 
                 if alg_config is None:
                     signed = data
+                    file_public_key = None
                 elif ASN1_PARSER_AVAILABLE:
                     # Properly replace signature and public key using ASN.1 parser
                     # This fixes the methodological issue: we REPLACE signatures, not append
                     try:
+                        # Generate unique keypair per file for scientific accuracy
+                        # This represents real-world scenario where each object has its own keypair
+                        file_public_key = signer.generate_keypair()
+                        
                         # Extract the "To Be Signed" portion (the part that should be signed)
                         object_type = detect_rpki_object_type(data, str(f))
                         tbs_data = extract_tbs_for_signing(data, object_type, str(f))
@@ -309,51 +310,55 @@ for name, alg_config in available_algos.items():
                             hybrid_sig += pq_signature
                             hybrid_sig += alg_config[1].encode('utf-8')
                             # Use the hybrid signature for replacement
-                            signed = create_resigned_object(data, hybrid_sig, public_key, object_type, str(f))
+                            signed = create_resigned_object(data, hybrid_sig, file_public_key, object_type, str(f))
                         else:
                             # Regular PQ signature
                             signature = signer.sign(tbs_data)
                             # Replace signature and public key in the ASN.1 structure
                             # This properly replaces 1 or 2 signatures and public key per object
-                            signed = create_resigned_object(data, signature, public_key, object_type, str(f))
+                            signed = create_resigned_object(data, signature, file_public_key, object_type, str(f))
                     except Exception as asn1_error:
-                        # If ASN.1 parsing fails, fall back to old method (with warning)
-                        # This should be rare, but we handle it gracefully
+                        # If ASN.1 parsing fails, we cannot produce scientifically valid results
+                        # Fail fast rather than contaminating results with incorrect methodology
+                        failed_count += 1
+                        error_log = dir_out / ".errors.log"
+                        try:
+                            with open(error_log, 'a') as log:
+                                log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {f.name}: ASN.1 parsing failed: {asn1_error}\n")
+                        except Exception:
+                            pass
+                        # Skip this file - do not use fallback append method
                         if processed_count % 1000 == 0:  # Only warn occasionally to avoid spam
                             print(f"WARNING: ASN.1 parsing failed for {f.name}: {asn1_error}")
-                            print(f"  Falling back to append method (incorrect but functional)")
-                        if is_hybrid:
-                            pq_signature = signer.sign(data)
-                            import struct
-                            hybrid_sig = struct.pack('>I', len(pq_signature))
-                            hybrid_sig += pq_signature
-                            hybrid_sig += alg_config[1].encode('utf-8')
-                            signed = data + hybrid_sig
-                        else:
-                            signature = signer.sign(data)
-                            signed = data + signature
+                            print(f"  Skipping file to maintain scientific accuracy")
+                        continue
                 else:
-                    # ASN.1 parser not available - use old method (incorrect)
-                    if is_hybrid:
-                        # Create hybrid signature (simplified)
-                        pq_signature = signer.sign(data)
-                        # Hybrid structure: [PQ Sig Length][PQ Sig][Algorithm ID]
-                        import struct
-                        hybrid_sig = struct.pack('>I', len(pq_signature))
-                        hybrid_sig += pq_signature
-                        hybrid_sig += alg_config[1].encode('utf-8')
-                        signed = data + hybrid_sig
-                    else:
-                        # Regular PQ signature
-                        signature = signer.sign(data)
-                        signed = data + signature
+                    # ASN.1 parser not available - cannot produce scientifically valid results
+                    # Fail this file rather than using incorrect append method
+                    failed_count += 1
+                    error_log = dir_out / ".errors.log"
+                    try:
+                        with open(error_log, 'a') as log:
+                            log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {f.name}: ASN.1 parser not available\n")
+                    except Exception:
+                        pass
+                    if processed_count % 1000 == 0:
+                        print(f"WARNING: ASN.1 parser not available - skipping {f.name} to maintain scientific accuracy")
+                    continue
                 
                 # Write file atomically (write to temp, then rename)
                 temp_file = output_file.with_suffix(output_file.suffix + '.tmp')
                 temp_file.write_bytes(signed)
                 temp_file.replace(output_file)
                 
-                total_size += len(signed)
+                # Calculate size including public key overhead for scientific accuracy
+                # Public key is not embedded in ASN.1 structure (skipped for complexity),
+                # so we add its size separately to get accurate total overhead measurement
+                if alg_config is not None and file_public_key is not None:
+                    public_key_size = len(file_public_key)
+                    total_size += len(signed) + public_key_size
+                else:
+                    total_size += len(signed)
                 processed_count += 1
                 
             except Exception as e:

@@ -25,6 +25,14 @@ except ImportError:
     OQS_AVAILABLE = False
     print("WARNING: OQS library not available for signature verification")
 
+# Import ASN.1 parser for proper signature extraction
+try:
+    from asn1_rpki import extract_signature_and_tbs, detect_rpki_object_type
+    ASN1_EXTRACTION_AVAILABLE = True
+except ImportError:
+    ASN1_EXTRACTION_AVAILABLE = False
+    print("WARNING: ASN.1 signature extraction not available. Install asn1crypto: pip install asn1crypto")
+
 repos = Path("/data/signed")
 results = []
 validation_errors = []
@@ -238,18 +246,45 @@ for repo in sorted(repos.iterdir()):
                     try:
                         signed_data = f.read_bytes()
                         
-                        if len(signed_data) > sig_len:
-                            original_data = signed_data[:-sig_len]
-                            signature = signed_data[-sig_len:]
-                            
-                            # Verify signature (this gives us real validation time)
-                            is_valid = verifier.verify(original_data, signature, public_key)
-                            if is_valid:
-                                verified_count += 1
+                        # Properly extract signature and TBS from ASN.1 structure
+                        if ASN1_EXTRACTION_AVAILABLE:
+                            try:
+                                object_type = detect_rpki_object_type(signed_data, str(f))
+                                tbs_data, signature = extract_signature_and_tbs(signed_data, object_type, str(f))
+                                
+                                # Verify signature with correct TBS data
+                                is_valid = verifier.verify(tbs_data, signature, public_key)
+                                if is_valid:
+                                    verified_count += 1
+                                else:
+                                    failed_count += 1
+                            except Exception as asn1_err:
+                                # If ASN.1 extraction fails, try fallback method (for backwards compatibility)
+                                # This should be rare if ASN.1 replacement worked correctly
+                                if len(signed_data) > sig_len:
+                                    # Fallback: assume appended (for files that failed ASN.1 replacement)
+                                    original_data = signed_data[:-sig_len]
+                                    signature = signed_data[-sig_len:]
+                                    is_valid = verifier.verify(original_data, signature, public_key)
+                                    if is_valid:
+                                        verified_count += 1
+                                    else:
+                                        failed_count += 1
+                                else:
+                                    failed_count += 1
+                        else:
+                            # ASN.1 extraction not available - use fallback (assumes appended)
+                            # This is incorrect but allows measurement to continue
+                            if len(signed_data) > sig_len:
+                                original_data = signed_data[:-sig_len]
+                                signature = signed_data[-sig_len:]
+                                is_valid = verifier.verify(original_data, signature, public_key)
+                                if is_valid:
+                                    verified_count += 1
+                                else:
+                                    failed_count += 1
                             else:
                                 failed_count += 1
-                        else:
-                            failed_count += 1
                     except Exception as e:
                         failed_count += 1
                 

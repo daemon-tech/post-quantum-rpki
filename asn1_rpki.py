@@ -119,6 +119,61 @@ def parse_certificate(data: bytes) -> Tuple[bytes, bytes, bytes, bytes]:
     return tbs_cert_bytes, sig_algorithm, signature_value, public_key_info
 
 
+def extract_signature_and_tbs(data: bytes, object_type: str = None, file_path: str = None) -> Tuple[bytes, bytes]:
+    """
+    Extract signature and TBS (To Be Signed) portion from RPKI object for verification.
+    This is the correct way to verify signatures in ASN.1 structures.
+    
+    Args:
+        data: RPKI object bytes
+        object_type: Type of object (auto-detected if None)
+        file_path: Optional file path for type detection
+    
+    Returns:
+        Tuple of (tbs_data, signature_bytes) for verification
+    """
+    if not ASN1_AVAILABLE:
+        raise ImportError("asn1crypto is required for signature extraction")
+    
+    if object_type is None:
+        object_type = detect_rpki_object_type(data, file_path)
+    
+    try:
+        if object_type == 'certificate':
+            cert = x509.Certificate.load(data)
+            tbs_data = cert['tbs_certificate'].dump()
+            # Extract signature value - it's an OctetBitString
+            signature_value = cert['signature_value']
+            signature_bytes = signature_value.contents if hasattr(signature_value, 'contents') else bytes(signature_value)
+            return tbs_data, signature_bytes
+        elif object_type in ('roa', 'manifest'):
+            cms_obj = cms.ContentInfo.load(data)
+            signed_data = cms_obj['content']
+            signer_info = signed_data['signer_infos'][0] if len(signed_data['signer_infos']) > 0 else None
+            
+            if signer_info and 'signed_attrs' in signer_info and signer_info['signed_attrs']:
+                tbs_data = signer_info['signed_attrs'].dump()
+            else:
+                tbs_data = signed_data['encap_content_info']['encap_content'].contents
+            
+            # Extract signature from signerInfo
+            signature_obj = signer_info['signature']
+            # OctetString.contents is already bytes
+            signature_bytes = signature_obj.contents if hasattr(signature_obj, 'contents') else bytes(signature_obj)
+            return tbs_data, signature_bytes
+        elif object_type == 'crl':
+            crl_obj = crl.CertificateList.load(data)
+            tbs_data = crl_obj['tbs_cert_list'].dump()
+            signature_value = crl_obj['signature']
+            # OctetBitString.contents is already bytes
+            signature_bytes = signature_value.contents if hasattr(signature_value, 'contents') else bytes(signature_value)
+            return tbs_data, signature_bytes
+        else:
+            raise ValueError(f"Unknown object type: {object_type}")
+    except Exception as e:
+        raise ValueError(f"Failed to extract signature and TBS: {e}")
+
+
 def replace_certificate_signature(
     original_data: bytes,
     new_signature: bytes,
@@ -367,11 +422,9 @@ def create_resigned_object(
             # CRL signature replacement
             return replace_crl_signature(original_data, new_signature, new_public_key)
         else:
-            # Unknown type - fallback to appending (not ideal)
-            print(f"WARNING: Unknown object type {object_type}, appending signature")
-            return original_data + new_signature
+            # Unknown type - cannot process scientifically
+            raise ValueError(f"Unknown object type {object_type} - cannot replace signature")
     except Exception as e:
-        # If parsing fails, fallback to appending (with warning)
-        print(f"WARNING: ASN.1 parsing failed: {e}, appending signature")
-        return original_data + new_signature
+        # If parsing fails, raise exception rather than falling back to incorrect method
+        raise ValueError(f"ASN.1 parsing failed: {e}") from e
 
