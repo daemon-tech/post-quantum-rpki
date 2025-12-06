@@ -59,8 +59,16 @@ docker compose run --rm pq-rpki bash
 # Or run individual steps
 docker compose run --rm pq-rpki python3 /work/pq-resign.py
 docker compose run --rm pq-rpki python3 /work/validate.py
+
+# For interactive analysis (recommended):
+docker compose run --rm -p 8888:8888 pq-rpki jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+# Then open http://localhost:8888 in your browser and open results-analysis.ipynb
+
+# Or for automated analysis (legacy):
 docker compose run --rm pq-rpki python3 /work/results.py
 ```
+
+See [WORKFLOW.md](WORKFLOW.md) for detailed workflow instructions.
 
 ### Data Directory Structure
 
