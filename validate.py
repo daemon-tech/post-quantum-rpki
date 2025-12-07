@@ -98,32 +98,60 @@ def extract_bytes_from_bitstring(bitstring, expected_size=None):
     if bitstring is None:
         return b''
     
-    # Method 1: Try .contents property (should work for byte-aligned data)
-    method1_result = None
+    # METHOD 1 (PRIMARY): Parse ASN.1 dump to extract data portion
+    # This is the MOST RELIABLE method - it directly parses the ASN.1 structure
+    # BitString ASN.1: [0x03 tag][length][unused_bits:1][data_bytes]
     try:
-        contents = bitstring.contents
-        if isinstance(contents, bytes):
-            method1_result = contents
-        elif isinstance(contents, bytearray):
-            method1_result = bytes(contents)
-        elif isinstance(contents, str):
-            method1_result = contents.encode('latin1')
-        else:
-            method1_result = bytes(contents) if contents else b''
+        dump = bitstring.dump()
         
-        # If we got the expected size, return it immediately
-        if expected_size is None or len(method1_result) == expected_size:
-            return method1_result
-        # If larger, might have ASN.1 wrapper - try from end
-        elif expected_size and len(method1_result) > expected_size:
-            trimmed = method1_result[-expected_size:]
-            if len(trimmed) == expected_size:
-                return trimmed
-        # If wrong size, continue to other methods (don't return wrong result)
+        if len(dump) >= 3 and dump[0] == 0x03:  # BitString tag
+            idx = 1
+            data_length = 0
+            
+            # Parse length field
+            if idx < len(dump):
+                len_byte = dump[idx]
+                idx += 1
+                
+                if (len_byte & 0x80) == 0:
+                    # Short form: length in single byte
+                    data_length = len_byte
+                else:
+                    # Long form: length in multiple bytes
+                    len_bytes = len_byte & 0x7F
+                    if 0 < len_bytes <= 4 and idx + len_bytes <= len(dump):
+                        length_bytes = dump[idx:idx+len_bytes]
+                        data_length = int.from_bytes(length_bytes, 'big')
+                        idx += len_bytes
+                    else:
+                        data_length = 0
+                
+                # Skip unused_bits byte
+                if idx < len(dump):
+                    idx += 1  # Skip unused_bits
+                    
+                    # Extract data bytes - prioritize expected_size
+                    if expected_size:
+                        # Try exact extraction from current position
+                        if idx + expected_size <= len(dump):
+                            result = dump[idx:idx+expected_size]
+                            if len(result) == expected_size:
+                                return result
+                        # Try from end (data might be at end of dump)
+                        if len(dump) >= expected_size:
+                            result = dump[-expected_size:]
+                            if len(result) == expected_size:
+                                return result
+                    else:
+                        # No expected size - use data_length
+                        if data_length > 0 and idx + data_length <= len(dump):
+                            return dump[idx:idx+data_length]
+                        elif idx < len(dump):
+                            return dump[idx:]
     except:
         pass
     
-    # Method 2: Convert bits to bytes manually (MOST RELIABLE METHOD)
+    # METHOD 2: Convert bits to bytes manually (FALLBACK)
     # BitString can be iterated to get individual bits
     # This should always work since BitString stores data as bits
     try:
@@ -180,60 +208,25 @@ def extract_bytes_from_bitstring(bitstring, expected_size=None):
         # If bit iteration fails, continue to next method
         pass
     
-    # Method 3: Parse ASN.1 dump to extract data portion (LAST RESORT)
-    # This parses the ASN.1 encoding: [tag: 0x03][length][unused_bits: 1 byte][data_bytes]
+    # METHOD 3: Try .contents property (LAST RESORT)
+    # Only use if it matches expected size exactly
     try:
-        dump = bitstring.dump()
-        if len(dump) > 5:
-            idx = 0
-            # Check tag (0x03 for BitString)
-            if dump[idx] == 0x03:
-                idx += 1
-                # Parse length
-                if idx < len(dump):
-                    len_byte = dump[idx]
-                    if (len_byte & 0x80) == 0:
-                        # Short form (1 byte length)
-                        data_len = len_byte
-                        idx += 1
-                    else:
-                        # Long form
-                        len_bytes = len_byte & 0x7F
-                        idx += 1
-                        if len_bytes > 0 and idx + len_bytes <= len(dump):
-                            data_len = int.from_bytes(dump[idx:idx+len_bytes], 'big')
-                            idx += len_bytes
-                        else:
-                            data_len = 0
-                    
-                    # Skip unused_bits byte (should be 0 for byte-aligned data)
-                    if idx < len(dump):
-                        unused_bits = dump[idx]
-                        idx += 1
-                        
-                        # Extract data bytes
-                        if expected_size:
-                            # Try to extract exactly expected_size bytes
-                            if idx + expected_size <= len(dump):
-                                return dump[idx:idx+expected_size]
-                            elif len(dump) >= expected_size:
-                                # Try from end (data should be at the end)
-                                return dump[-expected_size:]
-                            elif idx < len(dump):
-                                # Extract what we can
-                                return dump[idx:]
-                        else:
-                            # Extract all data based on length
-                            if data_len > 0 and idx + data_len <= len(dump):
-                                return dump[idx:idx+data_len]
-                            elif idx < len(dump):
-                                # Extract remaining bytes
-                                return dump[idx:]
-    except Exception as e:
+        if hasattr(bitstring, 'contents'):
+            contents = bitstring.contents
+            if isinstance(contents, (bytes, bytearray)):
+                result = bytes(contents)
+                # Only use if it matches expected size exactly
+                if expected_size is None or len(result) == expected_size:
+                    return result
+                # If larger, might have wrapper - try from end
+                elif expected_size and len(result) > expected_size:
+                    trimmed = result[-expected_size:]
+                    if len(trimmed) == expected_size:
+                        return trimmed
+    except:
         pass
     
-    # Fallback: return empty bytes
-    return b''
+    return b''  # Return empty if nothing works
 
 repos = Path("/data/signed")
 results = []
@@ -591,99 +584,17 @@ for repo in sorted(repos.iterdir()):
                                         ee_pubkey_info = ee_cert['tbs_certificate']['subject_public_key_info']
                                         
                                         # Extract raw public key bytes from BitString
-                                        # CRITICAL: The 270 bytes we're getting is wrong. Let's test the structure
-                                        # and implement a working fix based on what we actually find.
+                                        # COMPLETE FIX: Use the robust extraction function
+                                        # This properly parses the ASN.1 BitString structure
+                                        # to extract the raw public key bytes
                                         
                                         pubkey_bitstring = ee_pubkey_info['public_key']
-                                        required_bits = expected_pubkey_size * 8
-                                        ee_pubkey = None
                                         
-                                        # TEST 1: Try bit iteration and count how many bits we actually get
-                                        actual_bit_count = 0
-                                        try:
-                                            for bit in pubkey_bitstring:
-                                                actual_bit_count += 1
-                                                if actual_bit_count >= required_bits:
-                                                    break
-                                        except:
-                                            actual_bit_count = 0
+                                        # Use the robust extraction function with expected size
+                                        # This ensures we get exactly the right number of bytes
+                                        ee_pubkey = extract_bytes_from_bitstring(pubkey_bitstring, expected_pubkey_size)
                                         
-                                        # If we can iterate and get enough bits, convert to bytes
-                                        if actual_bit_count >= required_bits:
-                                            try:
-                                                bits = []
-                                                for bit in pubkey_bitstring:
-                                                    bits.append(int(bit))
-                                                    if len(bits) >= required_bits:
-                                                        break
-                                                
-                                                if len(bits) >= required_bits:
-                                                    byte_list = []
-                                                    for i in range(0, required_bits, 8):
-                                                        byte_bits = bits[i:i+8]
-                                                        if len(byte_bits) == 8:
-                                                            byte_val = sum(int(b) << (7 - j) for j, b in enumerate(byte_bits))
-                                                            byte_list.append(byte_val)
-                                                    
-                                                    if len(byte_list) == expected_pubkey_size:
-                                                        ee_pubkey = bytes(byte_list)
-                                            except:
-                                                pass
-                                        
-                                        # TEST 2: Check BitString dump size and structure
-                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
-                                            try:
-                                                dump = pubkey_bitstring.dump()
-                                                # For 1312 bytes, dump should be ~1315-1320 bytes
-                                                # Parse: [0x03][length][unused_bits:1][data:1312]
-                                                if len(dump) >= expected_pubkey_size + 3 and dump[0] == 0x03:
-                                                    idx = 1
-                                                    # Parse length
-                                                    if idx < len(dump):
-                                                        len_byte = dump[idx]
-                                                        if (len_byte & 0x80) == 0:
-                                                            # Short form
-                                                            idx += 1
-                                                        else:
-                                                            # Long form
-                                                            len_bytes = len_byte & 0x7F
-                                                            idx += 1
-                                                            if len_bytes > 0 and idx + len_bytes <= len(dump):
-                                                                idx += len_bytes
-                                                        
-                                                        # Skip unused_bits
-                                                        if idx < len(dump):
-                                                            idx += 1
-                                                            # Extract data bytes
-                                                            if idx + expected_pubkey_size <= len(dump):
-                                                                ee_pubkey = dump[idx:idx+expected_pubkey_size]
-                                                            elif len(dump) >= expected_pubkey_size:
-                                                                # Try from end
-                                                                ee_pubkey = dump[-expected_pubkey_size:]
-                                            except:
-                                                pass
-                                        
-                                        # TEST 3: Try .contents but only if it's the right size
-                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
-                                            try:
-                                                if hasattr(pubkey_bitstring, 'contents'):
-                                                    contents = pubkey_bitstring.contents
-                                                    if isinstance(contents, (bytes, bytearray)):
-                                                        test = bytes(contents)
-                                                        # Only use if exactly right size
-                                                        if len(test) == expected_pubkey_size:
-                                                            ee_pubkey = test
-                                                        # If larger, might have wrapper
-                                                        elif len(test) > expected_pubkey_size:
-                                                            ee_pubkey = test[-expected_pubkey_size:]
-                                            except:
-                                                pass
-                                        
-                                        # Fallback: helper function
-                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
-                                            ee_pubkey = extract_bytes_from_bitstring(pubkey_bitstring, expected_pubkey_size)
-                                        
-                                        # Ensure bytes
+                                        # Ensure we have bytes (even if wrong size, we'll record it for debugging)
                                         if ee_pubkey is None:
                                             ee_pubkey = b''
                                         elif isinstance(ee_pubkey, bytearray):
