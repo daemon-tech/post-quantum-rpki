@@ -96,7 +96,7 @@ def check_and_filter_algorithms():
                 print(f"{name}: NOT available (missing: {alg_config})")
     
     if missing_algos:
-        print(f"\n⚠ WARNING: {len(missing_algos)} algorithm(s) not available - will be skipped:")
+        print(f"\nWARNING: {len(missing_algos)} algorithm(s) not available - will be skipped:")
         for name, alg in missing_algos:
             print(f"  - {name} (requires: {alg})")
         
@@ -109,7 +109,7 @@ def check_and_filter_algorithms():
             print("  Falcon:", ", ".join(sorted(falcon_algs)))
         print()
     
-    print(f"✓ Will process {len(available_algos)} algorithm(s)\n")
+    print(f"Will process {len(available_algos)} algorithm(s)\n")
     return available_algos, missing_algos
 
 
@@ -178,7 +178,14 @@ def get_input_files():
         print(f"ERROR: Failed to scan directory: {e}")
         sys.exit(1)
 
-print(f"✓ Input directory ready (processing files lazily - no upfront scan)\n")
+print(f"Input directory ready (processing files lazily - no upfront scan)\n")
+
+print("="*80)
+print("POST-QUANTUM RPKI RE-SIGNING")
+print("="*80)
+print(f"Processing {len(available_algos)} algorithm(s) with real-time progress metrics")
+print("="*80)
+print()
 
 # Process each available algorithm
 for name, alg_config in available_algos.items():
@@ -203,12 +210,12 @@ for name, alg_config in available_algos.items():
     if existing_count > 1000 and progress_state:
         prev_processed = progress_state.get('processed_count', 0)
         if prev_processed > 0 and existing_count >= prev_processed * 0.95:
-            print(f"✓ SKIPPING - Already completed ({existing_count:,} files, {prev_processed:,} processed)")
+            print(f"SKIPPING - Already completed ({existing_count:,} files, {prev_processed:,} processed)")
             print()
             continue
     
     if existing_count > 0 or progress_state:
-        print(f"⚠ Resuming - Found {existing_count:,} existing files")
+        print(f"Resuming - Found {existing_count:,} existing files")
         if progress_state:
             print(f"  Previous progress: {progress_state['processed_count']:,} processed, "
                   f"{progress_state.get('failed_count', 0):,} failed")
@@ -229,10 +236,10 @@ for name, alg_config in available_algos.items():
             signer = Signature(pq_alg)
             # Generate keypair per file for scientific accuracy (realistic scenario)
             # Store algorithm info for keypair generation
-            print(f"✓ Hybrid signer initialized: {classical_alg} + {pq_alg}")
+            print(f"Hybrid signer initialized: {classical_alg} + {pq_alg}")
             print(f"  Note: Generating unique keypair per file for scientific accuracy")
         except Exception as e:
-            print(f"✗ ERROR: Failed to initialize hybrid signer: {e}")
+            print(f"ERROR: Failed to initialize hybrid signer: {e}")
             print(f"  Skipping {name}")
             continue
     else:
@@ -240,10 +247,10 @@ for name, alg_config in available_algos.items():
         try:
             signer = Signature(alg_config)
             # Generate keypair per file for scientific accuracy (realistic scenario)
-            print(f"✓ Signer initialized: {alg_config}")
+            print(f"Signer initialized: {alg_config}")
             print(f"  Note: Generating unique keypair per file for scientific accuracy")
         except Exception as e:
-            print(f"✗ ERROR: Failed to initialize signer: {e}")
+            print(f"ERROR: Failed to initialize signer: {e}")
             print(f"  Skipping {name}")
             continue
     
@@ -267,9 +274,24 @@ for name, alg_config in available_algos.items():
     last_save_time = time.time()
     save_interval = 60  # Save progress every 60 seconds
     
+    # Initialize progress bar with custom metrics
+    pbar = None
+    last_update_time = time.time()
+    update_interval = 0.5  # Update metrics every 0.5 seconds (not every file for performance)
+    
     try:
         # Process files lazily (no upfront scan)
-        for f in tqdm(get_input_files(), desc=name, unit="obj", file=sys.stdout, mininterval=1.0):
+        pbar = tqdm(
+            get_input_files(), 
+            desc=f"{name:20s}", 
+            unit="obj", 
+            file=sys.stdout, 
+            mininterval=0.5,
+            maxinterval=2.0,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
+        )
+        
+        for f in pbar:
             relative_path = f.relative_to(subset)
             output_file = dir_out / relative_path
             output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -373,22 +395,46 @@ for name, alg_config in available_algos.items():
                 # Continue with next file - don't crash
                 continue
             
-            # Save progress periodically
+            # Update progress bar with metrics (throttled for performance)
             current_time = time.time()
+            if current_time - last_update_time >= update_interval and pbar is not None:
+                elapsed_time = current_time - start_time
+                rate = processed_count / elapsed_time if elapsed_time > 0 else 0
+                avg_size_kb = (total_size / processed_count / 1024) if processed_count > 0 else 0
+                success_rate = (processed_count / (processed_count + failed_count) * 100) if (processed_count + failed_count) > 0 else 100
+                size_gb = total_size / (1024**3)
+                
+                pbar.set_postfix({
+                    'OK': f"{processed_count:,}",
+                    'FAIL': f"{failed_count:,}",
+                    'SKIP': f"{skipped_count:,}",
+                    'Size': f"{size_gb:.2f}GB",
+                    'Rate': f"{rate:.1f}/s",
+                    'Avg': f"{avg_size_kb:.1f}KB"
+                })
+                last_update_time = current_time
+            
+            # Save progress periodically
             if current_time - last_save_time >= save_interval:
                 save_progress_state(dir_out, processed_count, failed_count, total_size, start_time)
                 last_save_time = current_time
         
         # Final progress save
         save_progress_state(dir_out, processed_count, failed_count, total_size, start_time)
+        if pbar is not None:
+            pbar.close()
         
     except KeyboardInterrupt:
-        print(f"\n\n⚠ Interrupted by user - saving progress...")
+        if pbar is not None:
+            pbar.close()
+        print(f"\n\nInterrupted by user - saving progress...")
         save_progress_state(dir_out, processed_count, failed_count, total_size, start_time)
         print(f"Progress saved. You can resume by running again.")
         sys.exit(1)
     except Exception as e:
-        print(f"\n\n✗ Fatal error: {e}")
+        if pbar is not None:
+            pbar.close()
+        print(f"\n\nFatal error: {e}")
         save_progress_state(dir_out, processed_count, failed_count, total_size, start_time)
         print(f"Progress saved up to {processed_count:,} files.")
         raise
@@ -423,18 +469,24 @@ for name, alg_config in available_algos.items():
         except Exception:
             pass
     
-    # Summary
-    print(f"\n✓ {name.upper()} completed:")
+    # Summary with visual formatting
+    print(f"\n{'='*80}")
+    print(f"{name.upper()} COMPLETED")
+    print(f"{'='*80}")
     print(f"  Processed: {processed_count:,} files")
-    print(f"  Skipped: {skipped_count:,} files")
-    print(f"  Failed: {failed_count:,} files")
-    print(f"  Size: {total_size/(1024**3):.2f} GB")
-    print(f"  Time: {elapsed/60:.1f} minutes")
-    
+    print(f"  Skipped:   {skipped_count:,} files")
+    print(f"  Failed:    {failed_count:,} files")
+    print(f"  Size:     {total_size/(1024**3):.2f} GB")
+    print(f"  Time:      {elapsed/60:.1f} minutes ({elapsed:.1f} seconds)")
+    if processed_count > 0 and elapsed > 0:
+        print(f"  Rate:     {processed_count/elapsed:.1f} files/sec")
+        print(f"  Avg Size: {total_size/processed_count/1024:.1f} KB/file")
     if failed_count > 0:
-        print(f"  ⚠ Check {dir_out / '.errors.log'} for error details")
+        print(f"  WARNING: Check {dir_out / '.errors.log'} for error details")
     print()
 
 print("="*80)
-print("Re-signing complete! Ready for validation.")
+print("RE-SIGNING COMPLETE - READY FOR VALIDATION")
+print("="*80)
+print(f"All {len(available_algos)} algorithm(s) processed successfully!")
 print("="*80)

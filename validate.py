@@ -14,8 +14,10 @@ import time
 import re
 import json
 import shutil
+import sys
 from pathlib import Path
 from datetime import datetime
+from tqdm import tqdm
 
 # Import OQS for signature verification (fallback when rpki-client can't validate)
 try:
@@ -97,13 +99,17 @@ for repo in sorted(repos.iterdir()):
         continue
     
     algo = repo.name
-    print(f"Validating {algo.upper()}...")
+    print(f"\n{'='*80}")
+    print(f"Validating {algo.upper()}")
+    print(f"{'='*80}")
     
     # Collect repository statistics
+    print("Scanning repository...")
     files = list(repo.rglob("*"))
     file_count = len([f for f in files if f.is_file()])
     total_size_bytes = sum(f.stat().st_size for f in files if f.is_file())
     total_size_gb = total_size_bytes / (1024**3)
+    print(f"Found {file_count:,} files ({total_size_gb:.3f} GB)")
     
     # Run rpki-client validation with better error handling
     start = time.time()
@@ -231,6 +237,16 @@ for repo in sorted(repos.iterdir()):
                 failed_count = 0
                 verify_start = time.time()
                 
+                # Progress bar for signature verification
+                verify_pbar = tqdm(
+                    files_to_check,
+                    desc="  Verifying",
+                    unit="sig",
+                    file=sys.stdout,
+                    mininterval=0.5,
+                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
+                )
+                
                 # Load the public key used for signing (saved during signing)
                 key_file = repo / ".public_key"
                 if key_file.exists():
@@ -238,11 +254,21 @@ for repo in sorted(repos.iterdir()):
                     print(f"Loaded public key from signing process")
                 else:
                     # Fallback: generate new keypair (signatures won't verify, but we can measure time)
-                    print(f"Public key not found - generating new keypair for timing measurement")
-                    print(f"Signatures won't verify, but validation time will be accurate")
+                    print(f"  Public key not found - generating new keypair for timing measurement")
+                    print(f"  Signatures won't verify, but validation time will be accurate")
                     public_key, _ = verifier.generate_keypair()
                 
-                for f in files_to_check:
+                # Progress bar for signature verification
+                verify_pbar = tqdm(
+                    files_to_check,
+                    desc="  Verifying",
+                    unit="sig",
+                    file=sys.stdout,
+                    mininterval=0.5,
+                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
+                )
+                
+                for f in verify_pbar:
                     try:
                         signed_data = f.read_bytes()
                         
@@ -287,7 +313,17 @@ for repo in sorted(repos.iterdir()):
                                 failed_count += 1
                     except Exception as e:
                         failed_count += 1
+                    
+                    # Update progress bar with metrics (throttled for performance)
+                    current_verify_time = time.time() - verify_start
+                    if current_verify_time > 0:
+                    verify_pbar.set_postfix({
+                        'OK': f"{verified_count}",
+                        'FAIL': f"{failed_count}",
+                        'Rate': f"{(verified_count + failed_count) / current_verify_time:.1f}/s"
+                    })
                 
+                verify_pbar.close()
                 verify_elapsed = time.time() - verify_start
                 
                 # Extrapolate to full dataset for total validation time estimate
@@ -305,9 +341,9 @@ for repo in sorted(repos.iterdir()):
                         "estimated_total_time": estimated_total_time
                     }
                     
-                    print(f"  ✓ Verified {verified_count}/{sample_size} signatures in {verify_elapsed:.2f}s")
-                    print(f"  ✓ Estimated full validation time: {estimated_total_time:.1f}s ({estimated_total_time/60:.1f} min)")
-                    print(f"  ✓ Validation rate: {sample_size/verify_elapsed:.1f} signatures/sec")
+                    print(f"  Verified {verified_count}/{sample_size} signatures in {verify_elapsed:.2f}s")
+                    print(f"  Estimated full validation time: {estimated_total_time:.1f}s ({estimated_total_time/60:.1f} min)")
+                    print(f"  Validation rate: {sample_size/verify_elapsed:.1f} signatures/sec")
                     
                     if verified_count == sample_size:
                         validation_success = True
@@ -385,15 +421,16 @@ for repo in sorted(repos.iterdir()):
             "errors_count": errors
         })
     
-    # Print summary
+    # Print summary with visual formatting
     status = "MEASURED" if validation_success else "FAIL"
     if elapsed < 0.1:
         elapsed_display = "<0.1s (file measurement)"
     else:
-        elapsed_display = f"{elapsed:.1f}s"
-    print(f"  {status} | {file_count:,} files | {total_size_gb:.3f} GB | {elapsed_display}")
-    if errors > 0 and elapsed >= 0.1:
-        print(f"{errors} error(s), {warnings} warning(s)")
+        elapsed_display = f"{elapsed:.1f}s" if elapsed < 60 else f"{elapsed/60:.1f}min"
+    rate_display = f"{file_count/elapsed:.0f} obj/s" if elapsed > 0.001 else "N/A"
+    print(f"\n  {status} | Files: {file_count:,} | Size: {total_size_gb:.3f} GB | Time: {elapsed_display} | Rate: {rate_display}")
+    if validated_objects > 0 or errors > 0:
+        print(f"  Validated: {validated_objects:,} | Errors: {errors:,} | Warnings: {warnings:,}")
 
 # Save comprehensive results to CSV
 import csv
