@@ -330,17 +330,54 @@ for repo in sorted(repos.iterdir()):
                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
             )
             
-            # Try to load public key (though we use per-file keys, this is for representative timing)
+            # Try to load or extract a real public key for fallback verification
+            # Note: For CMS objects (ROAs, Manifests), we extract the public key from each file's EE certificate
+            # This fallback key is only used for non-CMS objects or when EE cert extraction fails
             public_key = None
             key_file = repo / ".public_key"
             if key_file.exists():
                 public_key = key_file.read_bytes()
-                print(f"  Loaded representative public key ({len(public_key)} bytes)")
+                print(f"  Loaded public key from .public_key file ({len(public_key)} bytes)")
             else:
-                # Generate representative keypair for timing (signatures won't verify but timing is accurate)
-                public_key, _ = verifier.generate_keypair()
-                print(f"  Generated representative public key ({len(public_key)} bytes) for timing")
-                print(f"  Note: Signatures won't verify (per-file keys used), but timing is accurate")
+                # Try to extract a real public key from the first CMS file (more accurate than generating)
+                print(f"  Attempting to extract public key from actual files...")
+                for test_file in files[:100]:  # Check first 100 files
+                    try:
+                        test_data = test_file.read_bytes()
+                        if ASN1_EXTRACTION_AVAILABLE:
+                            ee_cert_bytes = extract_ee_certificate_from_cms(test_data)
+                            if ee_cert_bytes:
+                                from asn1crypto import x509
+                                ee_cert = x509.Certificate.load(ee_cert_bytes)
+                                ee_pubkey_info = ee_cert['tbs_certificate']['subject_public_key_info']
+                                public_key = ee_pubkey_info['public_key'].contents
+                                print(f"  Extracted public key from {test_file.name} ({len(public_key)} bytes)")
+                                break
+                    except:
+                        continue
+                
+                # If extraction failed, try generating a keypair as last resort
+                if public_key is None:
+                    try:
+                        keypair_result = verifier.generate_keypair()
+                        # Handle OQS generate_keypair() return value robustly (may vary by version)
+                        if isinstance(keypair_result, tuple) and len(keypair_result) >= 2:
+                            public_key = keypair_result[0]  # First element is public key
+                        elif isinstance(keypair_result, tuple):
+                            public_key = keypair_result[0]
+                        elif isinstance(keypair_result, (bytes, bytearray)):
+                            public_key = keypair_result
+                        elif hasattr(keypair_result, '__getitem__'):
+                            public_key = keypair_result[0]
+                        else:
+                            raise ValueError(f"Unexpected generate_keypair() return type: {type(keypair_result)}")
+                        
+                        print(f"  Generated representative public key ({len(public_key)} bytes)")
+                        print(f"  Note: Generated key may not match signatures (per-file keys used in actual verification)")
+                    except Exception as key_err:
+                        print(f"  WARNING: Could not extract or generate public key: {key_err}")
+                        print(f"  Continuing - CMS objects will extract keys from EE certificates")
+                        # public_key remains None - verification will only work if EE cert extraction succeeds
             
             for f in verify_pbar:
                 try:
@@ -422,14 +459,29 @@ for repo in sorted(repos.iterdir()):
                                         # EE cert extraction/verification failed, fall back to basic verification
                                         error_categories['ee_cert_extraction_error'] += 1
                                         error_details.append(f"{f.name}: EE cert error: {ee_err}")
-                                        is_valid = verifier.verify(tbs_data, signature, public_key)
+                                        if public_key:
+                                            is_valid = verifier.verify(tbs_data, signature, public_key)
+                                        else:
+                                            # No fallback key available, mark as failed
+                                            is_valid = False
+                                            error_categories['no_public_key_fallback'] += 1
                                 else:
                                     # No EE cert, verify CMS signature only
                                     metrics.record_ee_cert_extraction(False, "No EE cert found")
-                                    is_valid = verifier.verify(tbs_data, signature, public_key)
+                                    if public_key:
+                                        is_valid = verifier.verify(tbs_data, signature, public_key)
+                                    else:
+                                        # No fallback key available, mark as failed
+                                        is_valid = False
+                                        error_categories['no_public_key_fallback'] += 1
                             else:
                                 # Non-CMS object, standard verification
-                                is_valid = verifier.verify(tbs_data, signature, public_key)
+                                if public_key:
+                                    is_valid = verifier.verify(tbs_data, signature, public_key)
+                                else:
+                                    # No public key available, mark as failed
+                                    is_valid = False
+                                    error_categories['no_public_key_available'] += 1
                             
                             verification_time = time.time() - file_start
                             verification_times.append(verification_time)
