@@ -3,7 +3,7 @@
 **Measured what actually happens when we switch Internet routing security to quantum-safe cryptography.**
 
 - 118,068 real objects from todays live RIPE/APNIC repositories
-- Re-signed with **ML-DSA-44 (Dilithium-2)**, **ML-DSA-65 (Dilithium-3)**, **ML-DSA-87 (Dilithium-5)**, **Falcon-512**, and hybrid variants (final NIST standards)
+- Re-signed with **ML-DSA-44 (Dilithium-2)**, **ML-DSA-65 (Dilithium-3)**, and **Falcon-512** (final NIST standards)
 - Real size overhead measured -> no estimates, no toy CAs
 
 ## Repository Structure
@@ -24,8 +24,6 @@ pq-rpki-2025/
 ├── pq-resign.py                       # Main script: re-sign RPKI objects with PQ signatures
 ├── validate.py                        # Main script: validate and measure PQ signatures
 ├── results.py                         # Main script: generate analysis and visualizations
-├── pq-resign-enhanced.py              # Enhanced resigning with CMS wrapping
-├── validate-enhanced.py               # Enhanced validation with memory profiling
 ├── results-analysis.ipynb             # Jupyter notebook for interactive analysis
 ├── reproduce.sh                       # Complete reproduction workflow (Linux/Mac)
 ├── reproduce.bat                      # Complete reproduction workflow (Windows)
@@ -95,8 +93,6 @@ docker compose run --rm -p 8888:8888 pq-rpki jupyter notebook --ip=0.0.0.0 --por
 # Or for automated analysis (legacy):
 docker compose run --rm pq-rpki python3 /work/results.py
 ```
-
-See [WORKFLOW.md](WORKFLOW.md) for detailed workflow instructions.
 
 ### Data Directory Structure
 

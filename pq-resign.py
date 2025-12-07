@@ -47,15 +47,12 @@ subset = Path("/data/subset")
 out = Path("/data/signed")
 out.mkdir(exist_ok=True)
 
-# Algorithm list - only algorithms that exist will be processed
+# Algorithm list - only essential algorithms (hybrid removed for efficiency)
 algos = {
     "ecdsa-baseline": None,
     "dilithium2": "ML-DSA-44",
     "dilithium3": "ML-DSA-65",
-    "dilithium5": "ML-DSA-87",
     "falcon512": "Falcon-512",
-    "hybrid-ecdsa-dilithium2": ("ECDSA", "ML-DSA-44"),
-    "hybrid-ecdsa-falcon512": ("ECDSA", "Falcon-512"),
 }
 
 
@@ -77,23 +74,13 @@ def check_and_filter_algorithms():
             print(f"{name}: available (baseline)")
             continue
         
-        # Handle hybrid algorithms (tuple)
-        if isinstance(alg_config, tuple):
-            classical_alg, pq_alg = alg_config
-            if pq_alg in available_algs:
-                available_algos[name] = alg_config
-                print(f"{name}: available (hybrid: {pq_alg})")
-            else:
-                missing_algos.append((name, pq_alg))
-                print(f"{name}: NOT available (missing: {pq_alg})")
+        # Regular PQ algorithm (hybrid removed)
+        if alg_config in available_algs:
+            available_algos[name] = alg_config
+            print(f"{name}: available ({alg_config})")
         else:
-            # Regular PQ algorithm
-            if alg_config in available_algs:
-                available_algos[name] = alg_config
-                print(f"{name}: available ({alg_config})")
-            else:
-                missing_algos.append((name, alg_config))
-                print(f"{name}: NOT available (missing: {alg_config})")
+            missing_algos.append((name, alg_config))
+            print(f"{name}: NOT available (missing: {alg_config})")
     
     if missing_algos:
         print(f"\nWARNING: {len(missing_algos)} algorithm(s) not available - will be skipped:")
@@ -224,24 +211,9 @@ for name, alg_config in available_algos.items():
     # Initialize signer
     signer = None
     public_key = None
-    is_hybrid = False
     
     if alg_config is None:
         print("Processing baseline (copying files only)...")
-    elif isinstance(alg_config, tuple):
-        # Hybrid algorithm
-        is_hybrid = True
-        classical_alg, pq_alg = alg_config
-        try:
-            signer = Signature(pq_alg)
-            # Generate keypair per file for scientific accuracy (realistic scenario)
-            # Store algorithm info for keypair generation
-            print(f"Hybrid signer initialized: {classical_alg} + {pq_alg}")
-            print(f"  Note: Generating unique keypair per file for scientific accuracy")
-        except Exception as e:
-            print(f"ERROR: Failed to initialize hybrid signer: {e}")
-            print(f"  Skipping {name}")
-            continue
     else:
         # Regular PQ algorithm
         try:
@@ -316,29 +288,18 @@ for name, alg_config in available_algos.items():
                     try:
                         # Generate unique keypair per file for scientific accuracy
                         # This represents real-world scenario where each object has its own keypair
-                        file_public_key = signer.generate_keypair()
+                        # OQS generate_keypair() returns (public_key, private_key) tuple
+                        file_public_key, _ = signer.generate_keypair()
                         
                         # Extract the "To Be Signed" portion (the part that should be signed)
                         object_type = detect_rpki_object_type(data, str(f))
                         tbs_data = extract_tbs_for_signing(data, object_type, str(f))
                         
                         # Sign the TBS portion (not the whole file including old signature!)
-                        if is_hybrid:
-                            # Create hybrid signature (simplified)
-                            pq_signature = signer.sign(tbs_data)
-                            # Hybrid structure: [PQ Sig Length][PQ Sig][Algorithm ID]
-                            import struct
-                            hybrid_sig = struct.pack('>I', len(pq_signature))
-                            hybrid_sig += pq_signature
-                            hybrid_sig += alg_config[1].encode('utf-8')
-                            # Use the hybrid signature for replacement
-                            signed = create_resigned_object(data, hybrid_sig, file_public_key, object_type, str(f))
-                        else:
-                            # Regular PQ signature
-                            signature = signer.sign(tbs_data)
-                            # Replace signature and public key in the ASN.1 structure
-                            # This properly replaces 1 or 2 signatures and public key per object
-                            signed = create_resigned_object(data, signature, file_public_key, object_type, str(f))
+                        signature = signer.sign(tbs_data)
+                        # Replace signature and public key in the ASN.1 structure with proper OIDs
+                        # Pass algorithm name for OID lookup
+                        signed = create_resigned_object(data, signature, file_public_key, object_type, str(f), algorithm_name=alg_config)
                     except Exception as asn1_error:
                         # If ASN.1 parsing fails, we cannot produce scientifically valid results
                         # Fail fast rather than contaminating results with incorrect methodology
