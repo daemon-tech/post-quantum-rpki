@@ -38,15 +38,15 @@ The Internet **survives** quantum computers.
 
 ML-DSA-44 (Dilithium-2) = +210.7% - too big for current infrastructure.
 
-![sum](.\img\summary.png)
+![sum](/img/summary.png)
 
 Daily Delta Analysis (Bandwidth Overhead)
 
-![daily delta analysis](.\img\daily_delta.png)
+![daily delta analysis](/img/daily_delta.png)
 
 Key Findings
 
-![Key Findings](.\img\key_findings.png)
+![Key Findings](/img/key_findings.png)
 
 **Falcon-512 is the only viable path forward so far.**
 
