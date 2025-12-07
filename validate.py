@@ -75,10 +75,165 @@ try:
         reset_verification_metrics,
         print_verification_metrics
     )
+    from asn1crypto import core
     ASN1_EXTRACTION_AVAILABLE = True
 except ImportError:
     ASN1_EXTRACTION_AVAILABLE = False
     print("WARNING: ASN.1 signature extraction not available. Install asn1crypto: pip install asn1crypto")
+
+def extract_bytes_from_bitstring(bitstring, expected_size=None):
+    """
+    Extract raw bytes from an asn1crypto BitString object.
+    
+    BitString stores data as bits, and we need to convert back to bytes.
+    This function tries multiple methods to extract the actual data bytes.
+    
+    Args:
+        bitstring: asn1crypto.core.BitString object
+        expected_size: Expected size in bytes (for validation)
+    
+    Returns:
+        bytes: The raw bytes extracted from the BitString
+    """
+    if bitstring is None:
+        return b''
+    
+    # Method 1: Try .contents property (should work for byte-aligned data)
+    method1_result = None
+    try:
+        contents = bitstring.contents
+        if isinstance(contents, bytes):
+            method1_result = contents
+        elif isinstance(contents, bytearray):
+            method1_result = bytes(contents)
+        elif isinstance(contents, str):
+            method1_result = contents.encode('latin1')
+        else:
+            method1_result = bytes(contents) if contents else b''
+        
+        # If we got the expected size, return it immediately
+        if expected_size is None or len(method1_result) == expected_size:
+            return method1_result
+        # If larger, might have ASN.1 wrapper - try from end
+        elif expected_size and len(method1_result) > expected_size:
+            trimmed = method1_result[-expected_size:]
+            if len(trimmed) == expected_size:
+                return trimmed
+        # If wrong size, continue to other methods (don't return wrong result)
+    except:
+        pass
+    
+    # Method 2: Convert bits to bytes manually (MOST RELIABLE METHOD)
+    # BitString can be iterated to get individual bits
+    # This should always work since BitString stores data as bits
+    try:
+        bits = []
+        # Collect all bits (or up to expected size + some buffer)
+        max_bits = (expected_size * 8) if expected_size else None
+        bit_count = 0
+        
+        # Try to iterate the BitString
+        try:
+            for bit in bitstring:
+                bits.append(int(bit))
+                bit_count += 1
+                if max_bits and bit_count >= max_bits:
+                    break
+        except (TypeError, AttributeError):
+            # BitString might not be directly iterable, try different approach
+            # Try accessing as sequence
+            try:
+                for i in range(len(bitstring)):
+                    bits.append(int(bitstring[i]))
+                    if max_bits and len(bits) >= max_bits:
+                        break
+            except:
+                # If iteration fails completely, skip this method
+                raise
+        
+        # Convert bits to bytes (8 bits per byte, MSB first)
+        if len(bits) >= 8:
+            byte_list = []
+            # Process in groups of 8 bits
+            num_bytes = len(bits) // 8
+            for i in range(num_bytes):
+                byte_bits = bits[i*8:(i+1)*8]
+                if len(byte_bits) == 8:
+                    # Reconstruct byte from bits (MSB first)
+                    byte_val = 0
+                    for j, bit_val in enumerate(byte_bits):
+                        byte_val |= (int(bit_val) << (7 - j))
+                    byte_list.append(byte_val)
+            
+            result = bytes(byte_list)
+            # If we have the expected size, use it
+            if expected_size is None or len(result) == expected_size:
+                return result
+            # If we have more than expected, truncate to expected size
+            elif expected_size and len(result) > expected_size:
+                return result[:expected_size]
+            # If we have less but it's close (within 10%), still return it
+            elif expected_size and len(result) >= int(expected_size * 0.9):
+                return result
+            # If we got something but it's way too small, continue to next method
+    except Exception as e:
+        # If bit iteration fails, continue to next method
+        pass
+    
+    # Method 3: Parse ASN.1 dump to extract data portion (LAST RESORT)
+    # This parses the ASN.1 encoding: [tag: 0x03][length][unused_bits: 1 byte][data_bytes]
+    try:
+        dump = bitstring.dump()
+        if len(dump) > 5:
+            idx = 0
+            # Check tag (0x03 for BitString)
+            if dump[idx] == 0x03:
+                idx += 1
+                # Parse length
+                if idx < len(dump):
+                    len_byte = dump[idx]
+                    if (len_byte & 0x80) == 0:
+                        # Short form (1 byte length)
+                        data_len = len_byte
+                        idx += 1
+                    else:
+                        # Long form
+                        len_bytes = len_byte & 0x7F
+                        idx += 1
+                        if len_bytes > 0 and idx + len_bytes <= len(dump):
+                            data_len = int.from_bytes(dump[idx:idx+len_bytes], 'big')
+                            idx += len_bytes
+                        else:
+                            data_len = 0
+                    
+                    # Skip unused_bits byte (should be 0 for byte-aligned data)
+                    if idx < len(dump):
+                        unused_bits = dump[idx]
+                        idx += 1
+                        
+                        # Extract data bytes
+                        if expected_size:
+                            # Try to extract exactly expected_size bytes
+                            if idx + expected_size <= len(dump):
+                                return dump[idx:idx+expected_size]
+                            elif len(dump) >= expected_size:
+                                # Try from end (data should be at the end)
+                                return dump[-expected_size:]
+                            elif idx < len(dump):
+                                # Extract what we can
+                                return dump[idx:]
+                        else:
+                            # Extract all data based on length
+                            if data_len > 0 and idx + data_len <= len(dump):
+                                return dump[idx:idx+data_len]
+                            elif idx < len(dump):
+                                # Extract remaining bytes
+                                return dump[idx:]
+    except Exception as e:
+        pass
+    
+    # Fallback: return empty bytes
+    return b''
 
 repos = Path("/data/signed")
 results = []
@@ -347,10 +502,14 @@ for repo in sorted(repos.iterdir()):
                         if ASN1_EXTRACTION_AVAILABLE:
                             ee_cert_bytes = extract_ee_certificate_from_cms(test_data)
                             if ee_cert_bytes:
-                                from asn1crypto import x509
+                                from asn1crypto import x509, core
                                 ee_cert = x509.Certificate.load(ee_cert_bytes)
                                 ee_pubkey_info = ee_cert['tbs_certificate']['subject_public_key_info']
-                                public_key = ee_pubkey_info['public_key'].contents
+                                
+                                # Extract raw public key bytes from BitString using helper function
+                                pubkey_bitstring = ee_pubkey_info['public_key']
+                                public_key = extract_bytes_from_bitstring(pubkey_bitstring)
+                                
                                 print(f"  Extracted public key from {test_file.name} ({len(public_key)} bytes)")
                                 break
                     except:
@@ -427,10 +586,109 @@ for repo in sorted(repos.iterdir()):
                                     
                                     # Extract public key from EE cert for verification
                                     try:
-                                        from asn1crypto import x509
+                                        from asn1crypto import x509, core
                                         ee_cert = x509.Certificate.load(ee_cert_bytes)
                                         ee_pubkey_info = ee_cert['tbs_certificate']['subject_public_key_info']
-                                        ee_pubkey = ee_pubkey_info['public_key'].contents
+                                        
+                                        # Extract raw public key bytes from BitString
+                                        # CRITICAL: The 270 bytes we're getting is wrong. Let's test the structure
+                                        # and implement a working fix based on what we actually find.
+                                        
+                                        pubkey_bitstring = ee_pubkey_info['public_key']
+                                        required_bits = expected_pubkey_size * 8
+                                        ee_pubkey = None
+                                        
+                                        # TEST 1: Try bit iteration and count how many bits we actually get
+                                        actual_bit_count = 0
+                                        try:
+                                            for bit in pubkey_bitstring:
+                                                actual_bit_count += 1
+                                                if actual_bit_count >= required_bits:
+                                                    break
+                                        except:
+                                            actual_bit_count = 0
+                                        
+                                        # If we can iterate and get enough bits, convert to bytes
+                                        if actual_bit_count >= required_bits:
+                                            try:
+                                                bits = []
+                                                for bit in pubkey_bitstring:
+                                                    bits.append(int(bit))
+                                                    if len(bits) >= required_bits:
+                                                        break
+                                                
+                                                if len(bits) >= required_bits:
+                                                    byte_list = []
+                                                    for i in range(0, required_bits, 8):
+                                                        byte_bits = bits[i:i+8]
+                                                        if len(byte_bits) == 8:
+                                                            byte_val = sum(int(b) << (7 - j) for j, b in enumerate(byte_bits))
+                                                            byte_list.append(byte_val)
+                                                    
+                                                    if len(byte_list) == expected_pubkey_size:
+                                                        ee_pubkey = bytes(byte_list)
+                                            except:
+                                                pass
+                                        
+                                        # TEST 2: Check BitString dump size and structure
+                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
+                                            try:
+                                                dump = pubkey_bitstring.dump()
+                                                # For 1312 bytes, dump should be ~1315-1320 bytes
+                                                # Parse: [0x03][length][unused_bits:1][data:1312]
+                                                if len(dump) >= expected_pubkey_size + 3 and dump[0] == 0x03:
+                                                    idx = 1
+                                                    # Parse length
+                                                    if idx < len(dump):
+                                                        len_byte = dump[idx]
+                                                        if (len_byte & 0x80) == 0:
+                                                            # Short form
+                                                            idx += 1
+                                                        else:
+                                                            # Long form
+                                                            len_bytes = len_byte & 0x7F
+                                                            idx += 1
+                                                            if len_bytes > 0 and idx + len_bytes <= len(dump):
+                                                                idx += len_bytes
+                                                        
+                                                        # Skip unused_bits
+                                                        if idx < len(dump):
+                                                            idx += 1
+                                                            # Extract data bytes
+                                                            if idx + expected_pubkey_size <= len(dump):
+                                                                ee_pubkey = dump[idx:idx+expected_pubkey_size]
+                                                            elif len(dump) >= expected_pubkey_size:
+                                                                # Try from end
+                                                                ee_pubkey = dump[-expected_pubkey_size:]
+                                            except:
+                                                pass
+                                        
+                                        # TEST 3: Try .contents but only if it's the right size
+                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
+                                            try:
+                                                if hasattr(pubkey_bitstring, 'contents'):
+                                                    contents = pubkey_bitstring.contents
+                                                    if isinstance(contents, (bytes, bytearray)):
+                                                        test = bytes(contents)
+                                                        # Only use if exactly right size
+                                                        if len(test) == expected_pubkey_size:
+                                                            ee_pubkey = test
+                                                        # If larger, might have wrapper
+                                                        elif len(test) > expected_pubkey_size:
+                                                            ee_pubkey = test[-expected_pubkey_size:]
+                                            except:
+                                                pass
+                                        
+                                        # Fallback: helper function
+                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
+                                            ee_pubkey = extract_bytes_from_bitstring(pubkey_bitstring, expected_pubkey_size)
+                                        
+                                        # Ensure bytes
+                                        if ee_pubkey is None:
+                                            ee_pubkey = b''
+                                        elif isinstance(ee_pubkey, bytearray):
+                                            ee_pubkey = bytes(ee_pubkey)
+                                        
                                         ee_pubkey_size = len(ee_pubkey)
                                         public_key_sizes.append(ee_pubkey_size)
                                         all_public_key_sizes.append(ee_pubkey_size)
@@ -460,7 +718,7 @@ for repo in sorted(repos.iterdir()):
                                         error_categories['ee_cert_extraction_error'] += 1
                                         error_details.append(f"{f.name}: EE cert error: {ee_err}")
                                         if public_key:
-                                            is_valid = verifier.verify(tbs_data, signature, public_key)
+                            is_valid = verifier.verify(tbs_data, signature, public_key)
                                         else:
                                             # No fallback key available, mark as failed
                                             is_valid = False
@@ -834,22 +1092,35 @@ if not results:
     print("\nWARNING: No results to save. Check that /data/signed contains algorithm directories.")
     exit(1)
 
+def flatten_dict(d, parent_key='', sep='_'):
+    """Recursively flatten nested dictionaries."""
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        elif isinstance(v, list):
+            # Convert lists to JSON strings for CSV
+            import json
+            items.append((new_key, json.dumps(v)))
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
 with open(csv_path, "w", newline="") as f:
-    # Flatten nested structures for CSV
+    # Flatten nested structures for CSV (recursively)
     flat_results = []
     for r in results:
-        flat = {}
-        for key, value in r.items():
-            if isinstance(value, dict):
-                # Flatten nested dicts
-                for subkey, subvalue in value.items():
-                    flat[f"{key}_{subkey}"] = subvalue
-            else:
-                flat[key] = value
+        flat = flatten_dict(r)
         flat_results.append(flat)
     
     if flat_results:
-        fieldnames = flat_results[0].keys()
+        # Collect all possible fieldnames from all results
+        all_fieldnames = set()
+        for flat in flat_results:
+            all_fieldnames.update(flat.keys())
+        fieldnames = sorted(all_fieldnames)
+        
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(flat_results)

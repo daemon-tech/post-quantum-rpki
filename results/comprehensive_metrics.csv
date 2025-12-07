@@ -1,0 +1,5 @@
+Algorithm,Standardized,NIST Level,File Count,Total Size (GB),Validation Time (min),Objects/sec,Sig Verified,Sig Failed,Sig Success Rate (%),Avg Verify Time (ms),Verify Rate (sig/s),Sig Size (bytes),PubKey Size (bytes),Expected Sig Size,Expected PubKey Size,Size Overhead (%),Time Overhead (%)
+dilithium2,ML-DSA-44 (FIPS 204),2,118068,0.55,8.25,238.61,0,1000,0.0,3.66,238.6,2421.0,270.0,2420,1312,210.7,1681.2
+dilithium3,ML-DSA-65 (FIPS 204),3,118068,0.703,7.42,265.02,0,1000,0.0,3.28,265.0,3310.0,270.0,3309,1952,297.2,1503.7
+ecdsa-baseline,Traditional (ECDSA),0,118068,0.177,0.46,4249.85,0,0,0.0,0.0,0.0,0.0,0.0,0,0,0.0,0.0
+falcon512,Falcon-512 (NIST PQC Round 3),1,118068,0.245,8.06,244.03,0,1000,0.0,3.58,244.0,655.0,270.0,690,897,38.4,1641.6

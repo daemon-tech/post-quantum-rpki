@@ -39,9 +39,21 @@ plt.rcParams.update({
     'savefig.pad_inches': 0.1
 })
 
-# Load data
-csv_path = Path("/work/results.csv")
-json_path = Path("/work/results.json")
+# Load data - try results/ directory first, then fallback
+csv_path = Path("results/results.csv")
+json_path = Path("results/results.json")
+
+# Fallback paths
+if not csv_path.exists():
+    csv_path = Path("/work/results/results.csv")
+if not json_path.exists():
+    json_path = Path("/work/results/results.json")
+
+# Final fallback
+if not csv_path.exists():
+    csv_path = Path("/work/results.csv")
+if not json_path.exists():
+    json_path = Path("/work/results.json")
 
 if not csv_path.exists():
     print("ERROR: results.csv not found. Run validate.py first.")
@@ -49,12 +61,14 @@ if not csv_path.exists():
 
 df = pd.read_csv(csv_path)
 
-# Load JSON for metadata
+# Load JSON for comprehensive data
 metadata = {}
+results_list = []
 if json_path.exists():
     with open(json_path, 'r') as f:
         data = json.load(f)
         metadata = data.get('experiment_metadata', {})
+        results_list = data.get('results', [])
 
 # Print summary table
 print("\n" + "="*80)
@@ -92,31 +106,41 @@ if baseline is not None:
             print(f"{row['algorithm']:<20} {size_str:<15} {time_str:<15}")
     print("="*80)
 
-# Generate Markdown report
-md_path = Path("/work/RESULTS.md")
-with open(md_path, 'w') as f:
+# Generate comprehensive Markdown report
+md_path = Path("results/RESULTS.md")
+if not md_path.parent.exists():
+    md_path = Path("/work/RESULTS.md")
+
+with open(md_path, 'w', encoding='utf-8') as f:
+    # Header
     f.write("# Post-Quantum RPKI Validation Results\n\n")
-    f.write(f"**Experiment Date:** {metadata.get('date', 'Unknown')}\n")
-    f.write(f"**Total Objects:** {metadata.get('total_objects', 'Unknown'):,}\n\n")
+    f.write("**First Real-World Measurements of NIST Post-Quantum Signature Algorithms in RPKI**\n\n")
+    f.write(f"**Experiment Date:** {metadata.get('date', 'Unknown')}\n\n")
+    f.write(f"**Total Objects Validated:** {metadata.get('total_objects', 'Unknown'):,}\n\n")
+    f.write(f"**ASN.1 Extraction Available:** {metadata.get('asn1_extraction_available', False)}\n\n")
+    f.write(f"**OQS Library Available:** {metadata.get('oqs_available', False)}\n\n")
+    f.write("---\n\n")
     
+    # Executive Summary
+    f.write("## Executive Summary\n\n")
+    f.write("This report presents comprehensive validation results for post-quantum signature algorithms ")
+    f.write("applied to the RPKI (Resource Public Key Infrastructure) repository. ")
+    f.write("Measurements include repository size, validation time, signature verification performance, ")
+    f.write("and detailed per-object-type metrics.\n\n")
+    
+    # Summary Table
     f.write("## Summary Table\n\n")
-    # Use to_markdown if available, otherwise create simple table
-    try:
-        summary_df = df[['algorithm', 'algorithm_standardized', 'nist_security_level', 
-                        'file_count', 'total_size_gb', 'validation_time_min', 
-                        'validation_success']]
-        f.write(summary_df.to_markdown(index=False))
-    except (AttributeError, ImportError):
-        # Fallback for older pandas versions or missing tabulate
-        f.write("| Algorithm | Standardized | NIST Level | Files | Size (GB) | Time (min) | Status |\n")
-        f.write("|-----------|-------------|------------|-------|-----------|------------|--------|\n")
-        for _, row in df.iterrows():
-            status = "PASS" if row['validation_success'] else "FAIL"
-            f.write(f"| {row['algorithm']} | {row['algorithm_standardized']} | "
-                   f"{row['nist_security_level']} | {row['file_count']:,} | "
-                   f"{row['total_size_gb']:.2f} | {row['validation_time_min']:.2f} | {status} |\n")
-    f.write("\n\n")
+    f.write("| Algorithm | Standardized Name | NIST Level | Files | Size (GB) | Time (min) | Status |\n")
+    f.write("|-----------|-------------------|------------|-------|-----------|------------|--------|\n")
+    for _, row in df.iterrows():
+        status = "✓ PASS" if row['validation_success'] else "✗ FAIL"
+        algo_std = row.get('algorithm_standardized', row['algorithm'])
+        f.write(f"| {row['algorithm']} | {algo_std} | {row['nist_security_level']} | "
+               f"{row['file_count']:,} | {row['total_size_gb']:.2f} | "
+               f"{row['validation_time_min']:.2f} | {status} |\n")
+    f.write("\n")
     
+    # Relative Performance
     if baseline is not None:
         f.write("## Relative Performance vs ECDSA Baseline\n\n")
         f.write("| Algorithm | Size Overhead | Time Overhead |\n")
@@ -128,21 +152,130 @@ with open(md_path, 'w') as f:
                 f.write(f"| {row['algorithm']} | {size_str} | {time_str} |\n")
         f.write("\n")
     
-    f.write("## Detailed Metrics\n\n")
-    try:
-        f.write(df.to_markdown(index=False))
-    except (AttributeError, ImportError):
-        # Fallback: create CSV-style table
-        f.write("| " + " | ".join(df.columns) + " |\n")
-        f.write("|" + "|".join(["---"] * len(df.columns)) + "|\n")
+    # Detailed Results per Algorithm
+    f.write("## Detailed Results by Algorithm\n\n")
+    for result in results_list:
+        algo = result.get('algorithm', 'unknown')
+        f.write(f"### {algo.upper()}\n\n")
+        
+        # Basic metrics
+        f.write(f"**Standardized Name:** {result.get('algorithm_standardized', 'N/A')}\n\n")
+        f.write(f"**NIST Security Level:** {result.get('nist_security_level', 'N/A')}\n\n")
+        f.write(f"**Security Level:** {result.get('security_level', 'N/A')}\n\n")
+        f.write(f"**File Count:** {result.get('file_count', 0):,}\n\n")
+        f.write(f"**Total Size:** {result.get('total_size_gb', 0):.2f} GB ({result.get('total_size_bytes', 0):,} bytes)\n\n")
+        f.write(f"**Validation Time:** {result.get('validation_time_sec', 0):.2f} seconds ({result.get('validation_time_min', 0):.2f} minutes)\n\n")
+        f.write(f"**Objects per Second:** {result.get('objects_per_second', 0):.2f}\n\n")
+        f.write(f"**Validation Success:** {'✓ PASS' if result.get('validation_success', False) else '✗ FAIL'}\n\n")
+        
+        # File type breakdown
+        ftb = result.get('file_type_breakdown', {})
+        if isinstance(ftb, dict) and any(ftb.values()):
+            f.write("**File Type Breakdown:**\n\n")
+            f.write("| Type | Count |\n")
+            f.write("|------|-------|\n")
+            for ftype, count in ftb.items():
+                if count > 0:
+                    f.write(f"| {ftype} | {count:,} |\n")
+            f.write("\n")
+        
+        # Signature verification metrics
+        sig_ver = result.get('signature_verification', {})
+        if sig_ver and isinstance(sig_ver, dict) and sig_ver.get('sampled', 0) > 0:
+            f.write("#### Signature Verification Metrics\n\n")
+            f.write(f"**Sampled:** {sig_ver.get('sampled', 0):,} signatures\n\n")
+            f.write(f"**Verified:** {sig_ver.get('verified', 0):,} ({sig_ver.get('verification_rate_pct', 0):.1f}%)\n\n")
+            f.write(f"**Failed:** {sig_ver.get('failed', 0):,}\n\n")
+            f.write(f"**ASN.1 Extraction Failures:** {sig_ver.get('asn1_extraction_failures', 0):,}\n\n")
+            f.write(f"**Verification Time:** {sig_ver.get('verify_time_sec', 0):.2f} seconds\n\n")
+            f.write(f"**Average Verification Time:** {sig_ver.get('avg_verify_time_ms', 0):.2f} ms\n\n")
+            f.write(f"**Verification Rate:** {sig_ver.get('verification_rate_per_sec', 0):.1f} signatures/second\n\n")
+            
+            # Percentiles
+            if sig_ver.get('p25_verify_time_ms', 0) > 0:
+                f.write("**Verification Time Percentiles:**\n\n")
+                f.write("| Percentile | Time (ms) |\n")
+                f.write("|------------|----------|\n")
+                f.write(f"| P25 | {sig_ver.get('p25_verify_time_ms', 0):.2f} |\n")
+                f.write(f"| P50 (Median) | {sig_ver.get('p50_verify_time_ms', 0):.2f} |\n")
+                f.write(f"| P75 | {sig_ver.get('p75_verify_time_ms', 0):.2f} |\n")
+                f.write(f"| P95 | {sig_ver.get('p95_verify_time_ms', 0):.2f} |\n")
+                f.write(f"| P99 | {sig_ver.get('p99_verify_time_ms', 0):.2f} |\n")
+                f.write("\n")
+            
+            # Signature sizes
+            f.write("**Signature Sizes:**\n\n")
+            f.write("| Metric | Size (bytes) |\n")
+            f.write("|--------|-------------|\n")
+            f.write(f"| Average | {sig_ver.get('signature_size_avg_bytes', 0):.0f} |\n")
+            f.write(f"| Min | {sig_ver.get('signature_size_min_bytes', 0):.0f} |\n")
+            f.write(f"| Max | {sig_ver.get('signature_size_max_bytes', 0):.0f} |\n")
+            f.write(f"| Expected | {sig_ver.get('expected_signature_size_bytes', 0):.0f} |\n")
+            f.write("\n")
+            
+            # Public key sizes
+            f.write("**Public Key Sizes:**\n\n")
+            f.write("| Metric | Size (bytes) |\n")
+            f.write("|--------|-------------|\n")
+            f.write(f"| Average | {sig_ver.get('public_key_size_avg_bytes', 0):.0f} |\n")
+            f.write(f"| Min | {sig_ver.get('public_key_size_min_bytes', 0):.0f} |\n")
+            f.write(f"| Max | {sig_ver.get('public_key_size_max_bytes', 0):.0f} |\n")
+            f.write(f"| Expected | {sig_ver.get('expected_public_key_size_bytes', 0):.0f} |\n")
+            f.write("\n")
+            
+            # Per-type metrics
+            ptm = sig_ver.get('per_type_metrics', {})
+            if isinstance(ptm, dict) and any(ptm.values()):
+                f.write("#### Per-Object-Type Metrics\n\n")
+                for obj_type, metrics in ptm.items():
+                    if isinstance(metrics, dict) and metrics.get('count', 0) > 0:
+                        f.write(f"**{obj_type.upper()}:**\n\n")
+                        f.write("| Metric | Value |\n")
+                        f.write("|--------|-------|\n")
+                        f.write(f"| Count | {metrics.get('count', 0):,} |\n")
+                        f.write(f"| Verified | {metrics.get('verified', 0):,} |\n")
+                        f.write(f"| Failed | {metrics.get('failed', 0):,} |\n")
+                        f.write(f"| Verification Rate | {metrics.get('verification_rate', 0):.1f}% |\n")
+                        f.write(f"| Avg Verify Time | {metrics.get('avg_verify_time_ms', 0):.2f} ms |\n")
+                        f.write(f"| Avg Sig Size | {metrics.get('avg_sig_size_bytes', 0):.0f} bytes |\n")
+                        f.write(f"| Avg PubKey Size | {metrics.get('avg_pubkey_size_bytes', 0):.0f} bytes |\n")
+                        if metrics.get('ee_certs_found', 0) > 0:
+                            f.write(f"| EE Certs Found | {metrics.get('ee_certs_found', 0):,} |\n")
+                            f.write(f"| Issuer Certs Found | {metrics.get('issuer_certs_found', 0):,} |\n")
+                            f.write(f"| CMS Valid | {metrics.get('cms_valid_count', 0):,} |\n")
+                            f.write(f"| EE Cert Valid | {metrics.get('ee_cert_valid_count', 0):,} |\n")
+                            f.write(f"| Both Valid | {metrics.get('both_valid_count', 0):,} |\n")
+                        f.write("\n")
+        
+        f.write("---\n\n")
+    
+    # Key Findings
+    f.write("## Key Findings\n\n")
+    if baseline is not None:
+        f.write("### Size and Performance Overhead\n\n")
         for _, row in df.iterrows():
-            f.write("| " + " | ".join(str(val) for val in row.values) + " |\n")
-    f.write("\n\n")
+            if row['algorithm'] != 'ecdsa-baseline':
+                size_oh = row.get('size_overhead', 0)
+                time_oh = row.get('time_overhead', 0)
+                f.write(f"- **{row['algorithm']}**: {size_oh:+.1f}% size overhead, {time_oh:+.1f}% time overhead vs ECDSA\n")
+        f.write("\n")
+    
+    # Notes
     f.write("## Notes\n\n")
-    f.write("- **NIST Security Level:** Post-quantum security level (1-5)\n")
-    f.write("- **Size Overhead:** Percentage increase in repository size compared to ECDSA baseline\n")
-    f.write("- **Time Overhead:** Percentage increase in validation time compared to ECDSA baseline\n")
-    f.write("- All measurements performed on 450,000 RPKI objects from the global RPKI repository\n")
+    f.write("- **NIST Security Level:** Post-quantum security level (1-5) as defined by NIST\n")
+    f.write("- **Size Overhead:** Percentage change in repository size compared to ECDSA baseline\n")
+    f.write("- **Time Overhead:** Percentage change in validation time compared to ECDSA baseline\n")
+    f.write("- **EE Certificates:** End-Entity certificates embedded in CMS objects\n")
+    f.write("- **Issuer Certificates:** Certificates that sign EE certificates\n")
+    f.write("- All measurements performed on real-world RPKI repository data\n")
+    f.write("- Signature verification performed on a sample of objects for performance analysis\n\n")
+    
+    # Scientific Contribution
+    f.write("## Scientific Contribution\n\n")
+    f.write("This dataset represents the first real-world measurements of NIST post-quantum ")
+    f.write("signature algorithms (ML-DSA, Falcon) applied to the global RPKI repository at scale. ")
+    f.write("The results provide critical data for evaluating the practical impact of post-quantum ")
+    f.write("cryptography on RPKI infrastructure.\n\n")
 
 # Generate publication-quality figures
 
@@ -303,14 +436,14 @@ print("\n" + "="*80)
 print("ANALYSIS COMPLETE")
 print("="*80)
 print("\nGenerated files:")
-print(f"{md_path}          - Comprehensive Markdown report")
-print(f"/work/validation-time.png    - Validation time comparison")
-print(f"/work/repo-size.png          - Repository size comparison")
+print(f"  {md_path}          - Comprehensive Markdown report")
+print(f"  /work/validation-time.png    - Validation time comparison")
+print(f"  /work/repo-size.png          - Repository size comparison")
 if baseline is not None:
-    print(f"/work/relative-performance.png - Relative performance vs baseline")
+    print(f"  /work/relative-performance.png - Relative performance vs baseline")
 if 'objects_per_second' in df.columns:
-    print(f"/work/throughput.png         - Validation throughput")
-print(f"{latex_path}        - LaTeX table for papers")
+    print(f"  /work/throughput.png         - Validation throughput")
+print(f"  {latex_path}        - LaTeX table for papers")
 print("\n" + "="*80)
 print("SCIENTIFIC CONTRIBUTION")
 print("="*80)

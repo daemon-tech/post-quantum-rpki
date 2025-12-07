@@ -1,0 +1,117 @@
+algorithm,algorithm_standardized,avg_file_size_kb,file_count,file_type_breakdown_certificates,file_type_breakdown_crls,file_type_breakdown_manifests,file_type_breakdown_roas,max_file_size_bytes,median_file_size_bytes,min_file_size_bytes,nist_security_level,objects_per_second,rpki_client_elapsed_sec,rpki_client_return_code,rpki_client_stderr,rpki_client_stdout,scan_time_sec,security_level,signature_verification,signature_verification_asn1_extraction_failures,signature_verification_avg_verify_time_ms,signature_verification_detailed_metrics_cms_signature_verification_errors_CMS signature verification failed,signature_verification_detailed_metrics_cms_signature_verification_invalid,signature_verification_detailed_metrics_cms_signature_verification_success_rate,signature_verification_detailed_metrics_cms_signature_verification_total_verified,signature_verification_detailed_metrics_cms_signature_verification_valid,signature_verification_detailed_metrics_ee_certificate_extracted,signature_verification_detailed_metrics_ee_certificate_extraction_failed,signature_verification_detailed_metrics_ee_certificate_signatures_invalid,signature_verification_detailed_metrics_ee_certificate_signatures_valid,signature_verification_detailed_metrics_ee_certificate_signatures_verified,signature_verification_detailed_metrics_ee_certificate_verification_errors_No verifier or issuer public key provided for EE certificate signature,signature_verification_detailed_metrics_ee_certificate_verification_success_rate,signature_verification_detailed_metrics_error_count,signature_verification_detailed_metrics_object_loading_failed,signature_verification_detailed_metrics_object_loading_loaded,signature_verification_detailed_metrics_object_loading_objects_by_type_certificate,signature_verification_detailed_metrics_object_loading_objects_by_type_cms,signature_verification_detailed_metrics_object_loading_objects_by_type_crl,signature_verification_detailed_metrics_object_loading_objects_by_type_manifest,signature_verification_detailed_metrics_object_loading_objects_by_type_roa,signature_verification_detailed_metrics_object_loading_success_rate,signature_verification_detailed_metrics_object_loading_total_attempted,signature_verification_detailed_metrics_overall_verification_cannot_verify,signature_verification_detailed_metrics_overall_verification_fully_invalid,signature_verification_detailed_metrics_overall_verification_fully_valid,signature_verification_detailed_metrics_overall_verification_partially_valid,signature_verification_detailed_metrics_overall_verification_total_verified,signature_verification_detailed_metrics_signature_replacement_failed,signature_verification_detailed_metrics_signature_replacement_replaced,signature_verification_detailed_metrics_signature_replacement_success_rate,signature_verification_error_categories_verification_failed,signature_verification_error_count,signature_verification_error_sample,signature_verification_estimated_total_time_sec,signature_verification_expected_public_key_size_bytes,signature_verification_expected_signature_size_bytes,signature_verification_failed,signature_verification_file_size_p25_bytes,signature_verification_file_size_p50_bytes,signature_verification_file_size_p75_bytes,signature_verification_file_size_p95_bytes,signature_verification_file_size_p99_bytes,signature_verification_max_verify_time_ms,signature_verification_median_verify_time_ms,signature_verification_min_verify_time_ms,signature_verification_object_type_breakdown_certificate,signature_verification_object_type_breakdown_crl,signature_verification_object_type_breakdown_manifest,signature_verification_object_type_breakdown_roa,signature_verification_p25_verify_time_ms,signature_verification_p50_verify_time_ms,signature_verification_p75_verify_time_ms,signature_verification_p95_verify_time_ms,signature_verification_p99_verify_time_ms,signature_verification_per_type_metrics_certificate_avg_pubkey_size_bytes,signature_verification_per_type_metrics_certificate_avg_sig_size_bytes,signature_verification_per_type_metrics_certificate_avg_verify_time_ms,signature_verification_per_type_metrics_certificate_both_valid_count,signature_verification_per_type_metrics_certificate_cms_valid_count,signature_verification_per_type_metrics_certificate_count,signature_verification_per_type_metrics_certificate_ee_cert_valid_count,signature_verification_per_type_metrics_certificate_ee_certs_found,signature_verification_per_type_metrics_certificate_failed,signature_verification_per_type_metrics_certificate_issuer_certs_found,signature_verification_per_type_metrics_certificate_verification_rate,signature_verification_per_type_metrics_certificate_verified,signature_verification_per_type_metrics_crl_avg_pubkey_size_bytes,signature_verification_per_type_metrics_crl_avg_sig_size_bytes,signature_verification_per_type_metrics_crl_avg_verify_time_ms,signature_verification_per_type_metrics_crl_both_valid_count,signature_verification_per_type_metrics_crl_cms_valid_count,signature_verification_per_type_metrics_crl_count,signature_verification_per_type_metrics_crl_ee_cert_valid_count,signature_verification_per_type_metrics_crl_ee_certs_found,signature_verification_per_type_metrics_crl_failed,signature_verification_per_type_metrics_crl_issuer_certs_found,signature_verification_per_type_metrics_crl_verification_rate,signature_verification_per_type_metrics_crl_verified,signature_verification_per_type_metrics_manifest_avg_pubkey_size_bytes,signature_verification_per_type_metrics_manifest_avg_sig_size_bytes,signature_verification_per_type_metrics_manifest_avg_verify_time_ms,signature_verification_per_type_metrics_manifest_both_valid_count,signature_verification_per_type_metrics_manifest_cms_valid_count,signature_verification_per_type_metrics_manifest_count,signature_verification_per_type_metrics_manifest_ee_cert_valid_count,signature_verification_per_type_metrics_manifest_ee_certs_found,signature_verification_per_type_metrics_manifest_failed,signature_verification_per_type_metrics_manifest_issuer_certs_found,signature_verification_per_type_metrics_manifest_verification_rate,signature_verification_per_type_metrics_manifest_verified,signature_verification_per_type_metrics_roa_avg_pubkey_size_bytes,signature_verification_per_type_metrics_roa_avg_sig_size_bytes,signature_verification_per_type_metrics_roa_avg_verify_time_ms,signature_verification_per_type_metrics_roa_both_valid_count,signature_verification_per_type_metrics_roa_cms_valid_count,signature_verification_per_type_metrics_roa_count,signature_verification_per_type_metrics_roa_ee_cert_valid_count,signature_verification_per_type_metrics_roa_ee_certs_found,signature_verification_per_type_metrics_roa_failed,signature_verification_per_type_metrics_roa_issuer_certs_found,signature_verification_per_type_metrics_roa_verification_rate,signature_verification_per_type_metrics_roa_verified,signature_verification_public_key_size_avg_bytes,signature_verification_public_key_size_max_bytes,signature_verification_public_key_size_min_bytes,signature_verification_public_key_size_p50_bytes,signature_verification_public_key_size_variance,signature_verification_sampled,signature_verification_signature_size_avg_bytes,signature_verification_signature_size_max_bytes,signature_verification_signature_size_min_bytes,signature_verification_signature_size_p25_bytes,signature_verification_signature_size_p50_bytes,signature_verification_signature_size_p75_bytes,signature_verification_signature_size_p95_bytes,signature_verification_signature_size_p99_bytes,signature_verification_signature_size_variance,signature_verification_time_per_file_sec,signature_verification_verification_rate_pct,signature_verification_verification_rate_per_sec,signature_verification_verified,signature_verification_verify_time_sec,total_size_bytes,total_size_gb,validation_success,validation_time_min,validation_time_sec
+dilithium2,ML-DSA-44 (FIPS 204),4.88,118068,29952,21340,21340,45436,1519976,6136,2599,2,238.61,0.01785874366760254,0,"rpki-client: ta/ripe: using cache
+rpki-client: ta/afrinic: using cache
+rpki-client: ta/apnic: using cache
+rpki-client: ta/lacnic: using cache
+rpki-client: parse file ta/ripe/ripe-ncc-ta.cer: No such file or directory
+rpki-client: parse file ta/afrinic/AfriNIC.cer: No such file or directory
+rpki-client: parse file ta/apnic/apnic-rpki-root-iana-origin.cer: No such file or directory
+rpki-client: parse file ta/lacnic/rta-lacnic-rpki.cer: No such file or directory
+rpki-client: all files parsed: generating output
+","Processing time 0 seconds (0 seconds user, 0 seconds system)
+Skiplist entries: 0
+Route Origin Authorizations: 0 (0 failed parse, 0 invalid)
+AS Provider Attestations: 0 (0 failed parse, 0 invalid)
+Signed Prefix Lists: 0 (0 failed parse, 0 invalid)
+BGPsec Router Certificates: 0
+Certificates: 4 (4 invalid)
+Trust Anchor Locators: 4 (0 invalid)
+Manifests: 0 (0 failed parse)
+Certificate revocation lists: 0
+Ghostbuster records: 0
+Trust Anchor Keys: 0
+Repositories: 4
+New files moved into validated cache: 0
+Cleanup: removed 0 files, 0 directories
+Repository cleanup: kept 0 and removed 0 superfluous files
+VRP Entries: 0 (0 unique)
+VAP Entries: 0 (0 unique)
+VSP Entries: 0 (0 unique)
+",384.34,128-bit post-quantum,,0,3.656749963760376,499,499,0.0,499,0,998,0,499,0,499,499,0.0,998,0,1499,341,499,160,160,339,100.0,1499,499,0,0,0,499,0,0,0,1000,1000,"[""--bA8ysvL8RXYKA0LkO79VK03oU.cer: Signature verification failed"", ""--G6XF5MRXTo6VEiWGdWCd9Ba7c.cer: Signature verification failed"", ""-0cfhBMIntcBvatArmPHiPUmq28.cer: Signature verification failed"", ""-0iFaOdSC8eCoRmJdikDDtBpXNs.cer: Signature verification failed"", ""-0q1qaTcN7vWXmHkKkJWz5UbjHM.cer: Signature verification failed"", ""-0toP7pNtqwaWsUIgH_H6klsXsU.cer: Signature verification failed"", ""-1Hou5mkLX1_xMVwQZv3TIbTr9w.cer: Signature verification failed"", ""-1rPvPn87wNLipO9MZ5iBELWZn8.cer: Signature verification failed"", ""-1uWlTzNsR6SaDs-tbekV0lLJfA.cer: Signature verification failed"", ""-2uUY2HwxcguKwZ0DUuosLmTU_g.cer: Signature verification failed"", ""-3sFh4NlHpP6MN2W1iZebi81JVQ.cer: Signature verification failed"", ""-4BdU3nLB9UqQR7__QSRyjm3vyc.cer: Signature verification failed"", ""-4WO-66Tw4ktlJvcQfxEao687hs.cer: Signature verification failed"", ""-5w6kNDNa5K-MWAyXafCbH9OWQA.cer: Signature verification failed"", ""-65NuTksgZMhr1EdxrK1qomYGfo.cer: Signature verification failed"", ""-6D4tMTQWqlqqvV6OUQDcbyNBDc.cer: Signature verification failed"", ""-6fDrfB_gLNWwRO4Ulb1ekBp6uY.cer: Signature verification failed"", ""-6JuPNfggZmzoY8WNmp1fwTN8FQ.cer: Signature verification failed"", ""-7pKlgm0F05stHuVg04qnD2WhmM.cer: Signature verification failed"", ""-7q2kK3-EO9DS3GJVPFzh9Y4Rmg.cer: Signature verification failed""]",494.8188763561249,1312,2420,1000,3615,5306,6178,6408,6899,8.294820785522461,3.5991668701171875,2.313852310180664,341,160,160,339,3.1862258911132812,3.5991668701171875,4.073619842529297,4.815340042114258,5.417108535766602,0,2421.0,3.4032693007125183,0,0,341,0,0,341,0,0.0,0,0,2421.0,3.3288925886154175,0,0,160,0,0,160,0,0.0,0,270.0,2420.0,3.9167493581771846,0,0,160,0,160,160,0,0.0,0,270.0,2420.0,3.943753453482569,0,0,339,0,339,339,0,0.0,0,270.0,270,270,270,0.0,1000,2420.501,2421,2420,2420,2421,2421,2421,2421,0.24999900000000003,0.004190965175628662,0.0,238.60852049432643,0,4.190965175628662,590341930,0.55,True,8.25,494.82
+dilithium3,ML-DSA-65 (FIPS 204),6.24,118068,29952,21340,21340,45436,1521754,7914,3488,3,265.02,0.01817035675048828,0,"rpki-client: ta/ripe: using cache
+rpki-client: ta/afrinic: using cache
+rpki-client: ta/apnic: using cache
+rpki-client: ta/lacnic: using cache
+rpki-client: parse file ta/ripe/ripe-ncc-ta.cer: No such file or directory
+rpki-client: parse file ta/afrinic/AfriNIC.cer: No such file or directory
+rpki-client: parse file ta/apnic/apnic-rpki-root-iana-origin.cer: No such file or directory
+rpki-client: parse file ta/lacnic/rta-lacnic-rpki.cer: No such file or directory
+rpki-client: all files parsed: generating output
+","Processing time 0 seconds (0 seconds user, 0 seconds system)
+Skiplist entries: 0
+Route Origin Authorizations: 0 (0 failed parse, 0 invalid)
+AS Provider Attestations: 0 (0 failed parse, 0 invalid)
+Signed Prefix Lists: 0 (0 failed parse, 0 invalid)
+BGPsec Router Certificates: 0
+Certificates: 4 (4 invalid)
+Trust Anchor Locators: 4 (0 invalid)
+Manifests: 0 (0 failed parse)
+Certificate revocation lists: 0
+Ghostbuster records: 0
+Trust Anchor Keys: 0
+Repositories: 4
+New files moved into validated cache: 0
+Cleanup: removed 0 files, 0 directories
+Repository cleanup: kept 0 and removed 0 superfluous files
+VRP Entries: 0 (0 unique)
+VAP Entries: 0 (0 unique)
+VSP Entries: 0 (0 unique)
+",374.28,192-bit post-quantum,,0,3.275325298309326,499,499,0.0,499,0,998,0,499,0,499,499,0.0,998,0,1499,341,499,160,160,339,100.0,1499,499,0,0,0,499,0,0,0,1000,1000,"[""--bA8ysvL8RXYKA0LkO79VK03oU.cer: Signature verification failed"", ""--G6XF5MRXTo6VEiWGdWCd9Ba7c.cer: Signature verification failed"", ""-0cfhBMIntcBvatArmPHiPUmq28.cer: Signature verification failed"", ""-0iFaOdSC8eCoRmJdikDDtBpXNs.cer: Signature verification failed"", ""-0q1qaTcN7vWXmHkKkJWz5UbjHM.cer: Signature verification failed"", ""-0toP7pNtqwaWsUIgH_H6klsXsU.cer: Signature verification failed"", ""-1Hou5mkLX1_xMVwQZv3TIbTr9w.cer: Signature verification failed"", ""-1rPvPn87wNLipO9MZ5iBELWZn8.cer: Signature verification failed"", ""-1uWlTzNsR6SaDs-tbekV0lLJfA.cer: Signature verification failed"", ""-2uUY2HwxcguKwZ0DUuosLmTU_g.cer: Signature verification failed"", ""-3sFh4NlHpP6MN2W1iZebi81JVQ.cer: Signature verification failed"", ""-4BdU3nLB9UqQR7__QSRyjm3vyc.cer: Signature verification failed"", ""-4WO-66Tw4ktlJvcQfxEao687hs.cer: Signature verification failed"", ""-5w6kNDNa5K-MWAyXafCbH9OWQA.cer: Signature verification failed"", ""-65NuTksgZMhr1EdxrK1qomYGfo.cer: Signature verification failed"", ""-6D4tMTQWqlqqvV6OUQDcbyNBDc.cer: Signature verification failed"", ""-6fDrfB_gLNWwRO4Ulb1ekBp6uY.cer: Signature verification failed"", ""-6JuPNfggZmzoY8WNmp1fwTN8FQ.cer: Signature verification failed"", ""-7pKlgm0F05stHuVg04qnD2WhmM.cer: Signature verification failed"", ""-7q2kK3-EO9DS3GJVPFzh9Y4Rmg.cer: Signature verification failed""]",445.49961461734773,1952,3309,1000,4504,6195,7956,8186,8677,70.40286064147949,3.16619873046875,2.193927764892578,341,160,160,339,2.8133392333984375,3.16619873046875,3.5147666931152344,4.179239273071289,4.960775375366211,0,3310.0,2.8764145814778166,0,0,341,0,0,341,0,0.0,0,0,3310.0,2.9263973236083984,0,0,160,0,0,160,0,0.0,0,270.0,3309.0,3.485766053199768,0,0,160,0,160,160,0,0.0,0,270.0,3309.0,3.741952170312932,0,0,339,0,339,339,0,0.0,0,270.0,270,270,270,0.0,1000,3309.501,3310,3309,3309,3310,3310,3310,3310,0.24999900000000003,0.0037732460498809814,0.0,265.0237982841174,0,3.7732460498809814,754668246,0.703,True,7.42,445.5
+ecdsa-baseline,Traditional (ECDSA),1.57,118068,29952,21340,21340,45436,1515640,1800,433,0,4249.85,0.02051091194152832,0,"rpki-client: ta/ripe: using cache
+rpki-client: ta/afrinic: using cache
+rpki-client: ta/apnic: using cache
+rpki-client: ta/lacnic: using cache
+rpki-client: parse file ta/ripe/ripe-ncc-ta.cer: No such file or directory
+rpki-client: parse file ta/afrinic/AfriNIC.cer: No such file or directory
+rpki-client: parse file ta/apnic/apnic-rpki-root-iana-origin.cer: No such file or directory
+rpki-client: parse file ta/lacnic/rta-lacnic-rpki.cer: No such file or directory
+rpki-client: all files parsed: generating output
+","Processing time 0 seconds (0 seconds user, 0 seconds system)
+Skiplist entries: 0
+Route Origin Authorizations: 0 (0 failed parse, 0 invalid)
+AS Provider Attestations: 0 (0 failed parse, 0 invalid)
+Signed Prefix Lists: 0 (0 failed parse, 0 invalid)
+BGPsec Router Certificates: 0
+Certificates: 4 (4 invalid)
+Trust Anchor Locators: 4 (0 invalid)
+Manifests: 0 (0 failed parse)
+Certificate revocation lists: 0
+Ghostbuster records: 0
+Trust Anchor Keys: 0
+Repositories: 4
+New files moved into validated cache: 0
+Cleanup: removed 0 files, 0 directories
+Repository cleanup: kept 0 and removed 0 superfluous files
+VRP Entries: 0 (0 unique)
+VAP Entries: 0 (0 unique)
+VSP Entries: 0 (0 unique)
+",369.14,Classical,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,189642815,0.177,True,0.46,27.78
+falcon512,Falcon-512 (NIST PQC Round 3),2.17,118068,29952,21340,21340,45436,1516433,2591,827,1,244.03,0.02770686149597168,0,"rpki-client: ta/ripe: using cache
+rpki-client: ta/afrinic: using cache
+rpki-client: ta/apnic: using cache
+rpki-client: ta/lacnic: using cache
+rpki-client: parse file ta/ripe/ripe-ncc-ta.cer: No such file or directory
+rpki-client: parse file ta/afrinic/AfriNIC.cer: No such file or directory
+rpki-client: parse file ta/apnic/apnic-rpki-root-iana-origin.cer: No such file or directory
+rpki-client: parse file ta/lacnic/rta-lacnic-rpki.cer: No such file or directory
+rpki-client: all files parsed: generating output
+","Processing time 0 seconds (0 seconds user, 0 seconds system)
+Skiplist entries: 0
+Route Origin Authorizations: 0 (0 failed parse, 0 invalid)
+AS Provider Attestations: 0 (0 failed parse, 0 invalid)
+Signed Prefix Lists: 0 (0 failed parse, 0 invalid)
+BGPsec Router Certificates: 0
+Certificates: 4 (4 invalid)
+Trust Anchor Locators: 4 (0 invalid)
+Manifests: 0 (0 failed parse)
+Certificate revocation lists: 0
+Ghostbuster records: 0
+Trust Anchor Keys: 0
+Repositories: 4
+New files moved into validated cache: 0
+Cleanup: removed 0 files, 0 directories
+Repository cleanup: kept 0 and removed 0 superfluous files
+VRP Entries: 0 (0 unique)
+VAP Entries: 0 (0 unique)
+VSP Entries: 0 (0 unique)
+",366.11,128-bit post-quantum,,0,3.578986167907715,499,499,0.0,499,0,998,0,499,0,499,499,0.0,998,0,1499,341,499,160,160,339,100.0,1499,499,0,0,0,499,0,0,0,1000,1000,"[""--bA8ysvL8RXYKA0LkO79VK03oU.cer: Signature verification failed"", ""--G6XF5MRXTo6VEiWGdWCd9Ba7c.cer: Signature verification failed"", ""-0cfhBMIntcBvatArmPHiPUmq28.cer: Signature verification failed"", ""-0iFaOdSC8eCoRmJdikDDtBpXNs.cer: Signature verification failed"", ""-0q1qaTcN7vWXmHkKkJWz5UbjHM.cer: Signature verification failed"", ""-0toP7pNtqwaWsUIgH_H6klsXsU.cer: Signature verification failed"", ""-1Hou5mkLX1_xMVwQZv3TIbTr9w.cer: Signature verification failed"", ""-1rPvPn87wNLipO9MZ5iBELWZn8.cer: Signature verification failed"", ""-1uWlTzNsR6SaDs-tbekV0lLJfA.cer: Signature verification failed"", ""-2uUY2HwxcguKwZ0DUuosLmTU_g.cer: Signature verification failed"", ""-3sFh4NlHpP6MN2W1iZebi81JVQ.cer: Signature verification failed"", ""-4BdU3nLB9UqQR7__QSRyjm3vyc.cer: Signature verification failed"", ""-4WO-66Tw4ktlJvcQfxEao687hs.cer: Signature verification failed"", ""-5w6kNDNa5K-MWAyXafCbH9OWQA.cer: Signature verification failed"", ""-65NuTksgZMhr1EdxrK1qomYGfo.cer: Signature verification failed"", ""-6D4tMTQWqlqqvV6OUQDcbyNBDc.cer: Signature verification failed"", ""-6fDrfB_gLNWwRO4Ulb1ekBp6uY.cer: Signature verification failed"", ""-6JuPNfggZmzoY8WNmp1fwTN8FQ.cer: Signature verification failed"", ""-7pKlgm0F05stHuVg04qnD2WhmM.cer: Signature verification failed"", ""-7q2kK3-EO9DS3GJVPFzh9Y4Rmg.cer: Signature verification failed""]",483.82755351734164,897,690,1000,1840,2586,2633,2865,3423,87.73398399353027,3.331899642944336,2.2716522216796875,341,160,160,339,2.9218196868896484,3.331899642944336,3.7910938262939453,4.552364349365234,5.911350250244141,0,655.932551319648,3.352934314358619,0,0,341,0,0,341,0,0.0,0,0,655.95625,3.156660497188568,0,0,160,0,0,160,0,0.0,0,270.0,654.8375,4.057960212230682,0,0,160,0,160,160,0,0.0,0,270.0,654.9734513274336,3.7796349652045595,0,0,339,0,339,339,0,0.0,0,270.0,270,270,270,0.0,1000,655.436,665,649,654,655,657,659,661,5.111904000000001,0.004097872018814087,0.0,244.02909495680083,0,4.097872018814087,262693473,0.245,True,8.06,483.83
