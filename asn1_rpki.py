@@ -556,7 +556,9 @@ def replace_cms_signature(
     new_signature: bytes,
     new_public_key: bytes,
     algorithm_name: str = None,
-    ee_cert_signature: bytes = None
+    ee_cert_signature: bytes = None,
+    issuer_private_key: bytes = None,
+    issuer_public_key: bytes = None
 ) -> bytes:
     """
     Replace signature in CMS SignedData structure with proper OIDs and EE certificate.
@@ -566,7 +568,11 @@ def replace_cms_signature(
         new_signature: New post-quantum signature bytes for CMS content
         new_public_key: New post-quantum public key bytes
         algorithm_name: Name of algorithm (e.g., "ML-DSA-44") for OID lookup
-        ee_cert_signature: Optional signature for EE certificate TBS (if None, uses new_signature)
+        ee_cert_signature: Optional signature for EE certificate TBS
+            - If issuer_private_key provided: should be signed with issuer's key
+            - If None and no issuer: falls back to new_signature (self-signed)
+        issuer_private_key: Optional issuer private key for signing EE certificate
+        issuer_public_key: Optional issuer public key (for verification)
     
     Returns:
         New CMS structure with replaced signature and EE certificate
@@ -624,9 +630,15 @@ def replace_cms_signature(
                         ee_cert_bytes = bytes(cert_choice)
                 
                 if ee_cert_bytes:
-                    # Use the provided EE cert signature, or fall back to new_signature
-                    # Note: In practice, EE cert signature should be computed over EE cert TBS separately
+                    # Determine which signature to use for EE certificate
+                    # Priority: 1) Provided ee_cert_signature, 2) new_signature (self-signed fallback)
                     ee_sig_to_use = ee_cert_signature if ee_cert_signature is not None else new_signature
+                    
+                    # If issuer keys provided, we should use ee_cert_signature (signed by issuer)
+                    # Otherwise, we fall back to self-signed (acceptable for measurement)
+                    if issuer_private_key is None and ee_cert_signature is None:
+                        # No issuer key and no provided signature = self-signed (fallback)
+                        ee_sig_to_use = new_signature
                     
                     # Replace the EE certificate signature and public key using the dedicated function
                     replaced_ee_cert = replace_certificate_signature(
@@ -749,6 +761,82 @@ def extract_ee_certificate_from_cms(data: bytes) -> Optional[bytes]:
                 return cert_obj.dump()
             except:
                 return bytes(cert_choice)
+    except Exception as e:
+        return None
+
+
+def extract_issuer_certificate_from_cms(data: bytes) -> Optional[bytes]:
+    """
+    Extract the issuer certificate from a CMS SignedData structure.
+    The issuer certificate is the one whose subject matches the EE certificate's issuer.
+    
+    Args:
+        data: CMS SignedData bytes (ROA or manifest)
+    
+    Returns:
+        Issuer certificate bytes, or None if not found
+    """
+    if not ASN1_AVAILABLE:
+        return None
+    
+    try:
+        cms_obj = cms.ContentInfo.load(data)
+        signed_data = cms_obj['content']
+        
+        # Check if certificates field exists and has at least one certificate
+        if 'certificates' not in signed_data or len(signed_data['certificates']) < 1:
+            return None
+        
+        # Extract EE certificate (first one)
+        ee_cert_choice = signed_data['certificates'][0]
+        ee_cert_bytes = None
+        if hasattr(ee_cert_choice, 'chosen'):
+            ee_cert_bytes = ee_cert_choice.chosen.dump()
+        elif hasattr(ee_cert_choice, 'dump'):
+            ee_cert_bytes = ee_cert_choice.dump()
+        else:
+            try:
+                ee_cert_obj = x509.Certificate.load(bytes(ee_cert_choice))
+                ee_cert_bytes = ee_cert_obj.dump()
+            except:
+                ee_cert_bytes = bytes(ee_cert_choice)
+        
+        if not ee_cert_bytes:
+            return None
+        
+        # Parse EE certificate to get issuer
+        ee_cert = x509.Certificate.load(ee_cert_bytes)
+        ee_issuer = ee_cert['tbs_certificate']['issuer']
+        
+        # Look through remaining certificates to find issuer
+        for i in range(1, len(signed_data['certificates'])):
+            cert_choice = signed_data['certificates'][i]
+            
+            # Extract certificate bytes
+            cert_bytes = None
+            if hasattr(cert_choice, 'chosen'):
+                cert_bytes = cert_choice.chosen.dump()
+            elif hasattr(cert_choice, 'dump'):
+                cert_bytes = cert_choice.dump()
+            else:
+                try:
+                    cert_obj = x509.Certificate.load(bytes(cert_choice))
+                    cert_bytes = cert_obj.dump()
+                except:
+                    cert_bytes = bytes(cert_choice)
+            
+            if cert_bytes:
+                try:
+                    cert = x509.Certificate.load(cert_bytes)
+                    cert_subject = cert['tbs_certificate']['subject']
+                    
+                    # Check if this certificate's subject matches EE cert's issuer
+                    if cert_subject.dump() == ee_issuer.dump():
+                        return cert_bytes
+                except:
+                    continue
+        
+        return None
     except Exception as e:
         return None
 
@@ -957,6 +1045,8 @@ def create_resigned_object(
     file_path: str = None,
     algorithm_name: str = None,
     ee_cert_signature: bytes = None,
+    issuer_private_key: bytes = None,
+    issuer_public_key: bytes = None,
     metrics: VerificationMetrics = None
 ) -> bytes:
     """
@@ -997,7 +1087,15 @@ def create_resigned_object(
             metrics.record_signature_replacement(object_type, True)
             return result
         elif object_type in ('roa', 'manifest'):
-            result = replace_cms_signature(original_data, new_signature, new_public_key, algorithm_name=algorithm_name, ee_cert_signature=ee_cert_signature)
+            result = replace_cms_signature(
+                original_data, 
+                new_signature, 
+                new_public_key, 
+                algorithm_name=algorithm_name, 
+                ee_cert_signature=ee_cert_signature,
+                issuer_private_key=issuer_private_key,
+                issuer_public_key=issuer_public_key
+            )
             metrics.record_signature_replacement(object_type, True)
             return result
         elif object_type == 'crl':

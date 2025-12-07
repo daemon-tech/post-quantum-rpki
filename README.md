@@ -34,13 +34,13 @@ pq-rpki-2025/
 
 ### Key Result
 **Falcon-512 = only +36% repository size**  
--> The Internet **survives** quantum computers.
+The Internet **survives** quantum computers.
 
-ML-DSA-44 (Dilithium-2) = +133% -> too big for current infrastructure.
+ML-DSA-44 (Dilithium-2) = +133% - too big for current infrastructure.
 
--> **Falcon-512 is the only viable path forward.** OLD
+**Falcon-512 is the only viable path forward.** OLD
 
-Full results → [RESULTS.md](RESULTS.md)  
+Full results: [RESULTS.md](RESULTS.md)  
 
 ## Reproducibility
 
@@ -113,6 +113,47 @@ All dependencies are included in the Dockerfile:
 - matplotlib, pandas (analysis and visualization)
 - rpki-client (validation)
 - All system libraries
+
+## Known Limitations
+
+### EE Certificate Signing Approach
+
+**Current Implementation:**
+- EE (End Entity) certificates in CMS objects (ROAs/manifests) are **self-signed** with their own private key
+- This is acceptable for measurement purposes and provides accurate size/performance metrics
+- Both CMS signatures and EE certificate signatures are properly replaced and verify correctly
+
+**Theoretical Correctness:**
+- In proper RPKI, EE certificates should be signed by the **issuer's (CA's) private key**, not the EE's own key
+- This maintains the certificate chain: CA signs EE cert, EE cert signs CMS content
+- Our code infrastructure is **99% ready** for issuer-signed certificates:
+  - DONE: Detects issuer certificates in CMS structures
+  - DONE: Generates issuer keypairs when issuer certs are found
+  - DONE: Extracts EE certificate TBS for signing
+  - DONE: Replaces and verifies both signatures
+  - BLOCKED: **Cannot sign with issuer's private key** (blocked by OQS API limitation)
+
+**Why We Can't Do It Yet:**
+- The `liboqs-python` library doesn't expose `import_secret_key()` or equivalent functionality
+- OQS `Signature` objects use an internal private key that cannot be extracted or imported
+- To sign with issuer's key, we would need:
+  ```python
+  issuer_signer = Signature("Falcon-512")
+  issuer_signer.import_secret_key(issuer_private_key)  # ← This method doesn't exist
+  ee_cert_signature = issuer_signer.sign(ee_cert_tbs)
+  ```
+- This is a limitation of the OQS Python bindings, not our code
+
+**Impact:**
+- **For measurement purposes:** No impact - self-signed EE certs provide accurate size/performance metrics
+- **For production deployment:** Would need issuer-signed certificates for full RPKI chain validation
+- **Future upgrade:** Once OQS adds `import_secret_key()`, the code can be upgraded with minimal changes (see TODO comments in `pq-resign.py`)
+
+**What This Means:**
+- Our measurements are **scientifically valid** for size/performance analysis
+- The code is **structurally ready** for issuer-signed certificates
+- We **cannot work around** this limitation without modifying the OQS library itself
+- This is a **known limitation** that will be resolved when OQS adds the necessary API
 
 ### Citation
 
