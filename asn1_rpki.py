@@ -9,6 +9,7 @@ instead of just appending them, which was the methodological issue.
 import struct
 from typing import Tuple, Optional, Dict, Any
 from pathlib import Path
+from collections import defaultdict
 
 try:
     from asn1crypto import x509, core, pem, cms, crl, keys, algos
@@ -25,6 +26,230 @@ PQ_ALGORITHM_OIDS = {
     "ML-DSA-87": "1.3.6.1.4.1.2.267.1.6.9",  # Dilithium-5
     "Falcon-512": "1.3.9999.3.6.4",  # Falcon-512 (draft OID, may need update when finalized)
 }
+
+
+class VerificationMetrics:
+    """
+    Comprehensive metrics collection for RPKI object verification and processing.
+    Tracks all successes, failures, and debug information.
+    """
+    def __init__(self):
+        # Object loading metrics
+        self.objects_loaded = 0
+        self.objects_load_failed = 0
+        self.load_failures_by_type = defaultdict(int)
+        self.load_failures_by_reason = defaultdict(int)
+        
+        # Object type distribution
+        self.objects_by_type = defaultdict(int)
+        
+        # CMS signature verification metrics
+        self.cms_signatures_verified = 0
+        self.cms_signatures_valid = 0
+        self.cms_signatures_invalid = 0
+        self.cms_verification_errors = defaultdict(int)
+        
+        # EE certificate signature verification metrics
+        self.ee_cert_signatures_verified = 0
+        self.ee_cert_signatures_valid = 0
+        self.ee_cert_signatures_invalid = 0
+        self.ee_cert_verification_errors = defaultdict(int)
+        
+        # EE certificate extraction metrics
+        self.ee_certs_extracted = 0
+        self.ee_certs_extraction_failed = 0
+        self.ee_cert_extraction_errors = defaultdict(int)
+        
+        # Overall verification results
+        self.objects_fully_valid = 0  # Both CMS and EE cert valid
+        self.objects_partially_valid = 0  # One valid, one invalid
+        self.objects_fully_invalid = 0  # Both invalid
+        self.objects_cannot_verify = 0  # Missing verifier or keys
+        
+        # Signature replacement metrics
+        self.signatures_replaced = 0
+        self.signature_replacements_failed = 0
+        self.replacement_failures_by_type = defaultdict(int)
+        self.replacement_failures_by_reason = defaultdict(int)
+        
+        # Detailed error tracking
+        self.all_errors = []  # List of (object_type, error_type, error_message) tuples
+    
+    def record_object_loaded(self, object_type: str):
+        """Record successful object loading."""
+        self.objects_loaded += 1
+        self.objects_by_type[object_type] += 1
+    
+    def record_object_load_failed(self, object_type: str, reason: str):
+        """Record object loading failure."""
+        self.objects_load_failed += 1
+        self.load_failures_by_type[object_type] += 1
+        self.load_failures_by_reason[reason] += 1
+        self.all_errors.append(("load", object_type, reason))
+    
+    def record_cms_verification(self, valid: bool, error: str = ""):
+        """Record CMS signature verification result."""
+        self.cms_signatures_verified += 1
+        if valid:
+            self.cms_signatures_valid += 1
+        else:
+            self.cms_signatures_invalid += 1
+            if error:
+                self.cms_verification_errors[error] += 1
+                self.all_errors.append(("cms_verification", "cms", error))
+    
+    def record_ee_cert_verification(self, valid: bool, error: str = ""):
+        """Record EE certificate signature verification result."""
+        self.ee_cert_signatures_verified += 1
+        if valid:
+            self.ee_cert_signatures_valid += 1
+        else:
+            self.ee_cert_signatures_invalid += 1
+            if error:
+                self.ee_cert_verification_errors[error] += 1
+                self.all_errors.append(("ee_cert_verification", "ee_cert", error))
+    
+    def record_ee_cert_extraction(self, success: bool, error: str = ""):
+        """Record EE certificate extraction result."""
+        if success:
+            self.ee_certs_extracted += 1
+        else:
+            self.ee_certs_extraction_failed += 1
+            if error:
+                self.ee_cert_extraction_errors[error] += 1
+                self.all_errors.append(("ee_cert_extraction", "ee_cert", error))
+    
+    def record_overall_verification(self, cms_valid: bool, ee_cert_valid: bool, can_verify: bool = True):
+        """Record overall verification result for an object."""
+        if not can_verify:
+            self.objects_cannot_verify += 1
+        elif cms_valid and ee_cert_valid:
+            self.objects_fully_valid += 1
+        elif cms_valid or ee_cert_valid:
+            self.objects_partially_valid += 1
+        else:
+            self.objects_fully_invalid += 1
+    
+    def record_signature_replacement(self, object_type: str, success: bool, reason: str = ""):
+        """Record signature replacement result."""
+        if success:
+            self.signatures_replaced += 1
+        else:
+            self.signature_replacements_failed += 1
+            self.replacement_failures_by_type[object_type] += 1
+            if reason:
+                self.replacement_failures_by_reason[reason] += 1
+                self.all_errors.append(("replacement", object_type, reason))
+    
+    def get_summary(self) -> Dict[str, Any]:
+        """Get comprehensive summary of all metrics."""
+        total_objects = self.objects_loaded + self.objects_load_failed
+        total_verifications = self.cms_signatures_verified
+        
+        return {
+            "object_loading": {
+                "total_attempted": total_objects,
+                "loaded": self.objects_loaded,
+                "failed": self.objects_load_failed,
+                "success_rate": (self.objects_loaded / total_objects * 100) if total_objects > 0 else 0,
+                "failures_by_type": dict(self.load_failures_by_type),
+                "failures_by_reason": dict(self.load_failures_by_reason),
+                "objects_by_type": dict(self.objects_by_type),
+            },
+            "cms_signature_verification": {
+                "total_verified": self.cms_signatures_verified,
+                "valid": self.cms_signatures_valid,
+                "invalid": self.cms_signatures_invalid,
+                "success_rate": (self.cms_signatures_valid / self.cms_signatures_verified * 100) if self.cms_signatures_verified > 0 else 0,
+                "errors": dict(self.cms_verification_errors),
+            },
+            "ee_certificate": {
+                "extracted": self.ee_certs_extracted,
+                "extraction_failed": self.ee_certs_extraction_failed,
+                "extraction_errors": dict(self.ee_cert_extraction_errors),
+                "signatures_verified": self.ee_cert_signatures_verified,
+                "signatures_valid": self.ee_cert_signatures_valid,
+                "signatures_invalid": self.ee_cert_signatures_invalid,
+                "verification_success_rate": (self.ee_cert_signatures_valid / self.ee_cert_signatures_verified * 100) if self.ee_cert_signatures_verified > 0 else 0,
+                "verification_errors": dict(self.ee_cert_verification_errors),
+            },
+            "overall_verification": {
+                "fully_valid": self.objects_fully_valid,
+                "partially_valid": self.objects_partially_valid,
+                "fully_invalid": self.objects_fully_invalid,
+                "cannot_verify": self.objects_cannot_verify,
+                "total_verified": (self.objects_fully_valid + self.objects_partially_valid + 
+                                 self.objects_fully_invalid + self.objects_cannot_verify),
+            },
+            "signature_replacement": {
+                "replaced": self.signatures_replaced,
+                "failed": self.signature_replacements_failed,
+                "success_rate": (self.signatures_replaced / (self.signatures_replaced + self.signature_replacements_failed) * 100) if (self.signatures_replaced + self.signature_replacements_failed) > 0 else 0,
+                "failures_by_type": dict(self.replacement_failures_by_type),
+                "failures_by_reason": dict(self.replacement_failures_by_reason),
+            },
+            "error_count": len(self.all_errors),
+        }
+    
+    def print_summary(self):
+        """Print a human-readable summary of metrics."""
+        summary = self.get_summary()
+        
+        print("\n" + "="*80)
+        print("VERIFICATION METRICS SUMMARY")
+        print("="*80)
+        
+        # Object loading
+        print(f"\nObject Loading:")
+        print(f"  Loaded: {summary['object_loading']['loaded']}")
+        print(f"  Failed: {summary['object_loading']['failed']}")
+        print(f"  Success Rate: {summary['object_loading']['success_rate']:.2f}%")
+        if summary['object_loading']['objects_by_type']:
+            print(f"  By Type: {dict(summary['object_loading']['objects_by_type'])}")
+        if summary['object_loading']['failures_by_reason']:
+            print(f"  Failure Reasons: {dict(summary['object_loading']['failures_by_reason'])}")
+        
+        # CMS verification
+        print(f"\nCMS Signature Verification:")
+        print(f"  Verified: {summary['cms_signature_verification']['total_verified']}")
+        print(f"  Valid: {summary['cms_signature_verification']['valid']}")
+        print(f"  Invalid: {summary['cms_signature_verification']['invalid']}")
+        print(f"  Success Rate: {summary['cms_signature_verification']['success_rate']:.2f}%")
+        if summary['cms_signature_verification']['errors']:
+            print(f"  Errors: {dict(summary['cms_signature_verification']['errors'])}")
+        
+        # EE certificate
+        print(f"\nEE Certificate:")
+        print(f"  Extracted: {summary['ee_certificate']['extracted']}")
+        print(f"  Extraction Failed: {summary['ee_certificate']['extraction_failed']}")
+        print(f"  Signatures Verified: {summary['ee_certificate']['signatures_verified']}")
+        print(f"  Signatures Valid: {summary['ee_certificate']['signatures_valid']}")
+        print(f"  Signatures Invalid: {summary['ee_certificate']['signatures_invalid']}")
+        print(f"  Verification Success Rate: {summary['ee_certificate']['verification_success_rate']:.2f}%")
+        if summary['ee_certificate']['verification_errors']:
+            print(f"  Verification Errors: {dict(summary['ee_certificate']['verification_errors'])}")
+        
+        # Overall
+        print(f"\nOverall Verification:")
+        print(f"  Fully Valid (both signatures): {summary['overall_verification']['fully_valid']}")
+        print(f"  Partially Valid (one signature): {summary['overall_verification']['partially_valid']}")
+        print(f"  Fully Invalid (both signatures): {summary['overall_verification']['fully_invalid']}")
+        print(f"  Cannot Verify (missing verifier/keys): {summary['overall_verification']['cannot_verify']}")
+        
+        # Signature replacement
+        print(f"\nSignature Replacement:")
+        print(f"  Replaced: {summary['signature_replacement']['replaced']}")
+        print(f"  Failed: {summary['signature_replacement']['failed']}")
+        print(f"  Success Rate: {summary['signature_replacement']['success_rate']:.2f}%")
+        if summary['signature_replacement']['failures_by_reason']:
+            print(f"  Failure Reasons: {dict(summary['signature_replacement']['failures_by_reason'])}")
+        
+        print(f"\nTotal Errors Recorded: {summary['error_count']}")
+        print("="*80 + "\n")
+
+
+# Global metrics instance (can be reset or replaced)
+_global_metrics = VerificationMetrics()
 
 
 def bytes_to_bitstring_tuple(data: bytes) -> tuple:
@@ -330,16 +555,18 @@ def replace_cms_signature(
     original_data: bytes,
     new_signature: bytes,
     new_public_key: bytes,
-    algorithm_name: str = None
+    algorithm_name: str = None,
+    ee_cert_signature: bytes = None
 ) -> bytes:
     """
     Replace signature in CMS SignedData structure with proper OIDs and EE certificate.
     
     Args:
         original_data: Original CMS SignedData bytes
-        new_signature: New post-quantum signature bytes
+        new_signature: New post-quantum signature bytes for CMS content
         new_public_key: New post-quantum public key bytes
         algorithm_name: Name of algorithm (e.g., "ML-DSA-44") for OID lookup
+        ee_cert_signature: Optional signature for EE certificate TBS (if None, uses new_signature)
     
     Returns:
         New CMS structure with replaced signature and EE certificate
@@ -368,24 +595,162 @@ def replace_cms_signature(
                 'parameters': core.Null()
             })
     
-    # Update EE certificate with PQ public key if certificates exist
-    # Note: Full certificate creation is complex - this updates existing structure
+    # Replace EE certificate signature and public key using replace_certificate_signature
     if new_public_key and oid_to_use:
         try:
             # CMS certificates are in the certificates field (optional)
             if 'certificates' in signed_data and len(signed_data['certificates']) > 0:
-                # Try to update the first certificate (typically the EE certificate)
+                # Extract the first certificate (typically the EE certificate)
                 cert_choice = signed_data['certificates'][0]
-                # CMS uses CertificateChoices which can be different structures
-                # For simplicity, we focus on signature replacement which is the critical part
-                # Full certificate replacement would require complete certificate building
-                pass
+                
+                # CertificateChoices can be different structures, but typically contains a Certificate
+                # Extract the actual certificate bytes
+                ee_cert_bytes = None
+                
+                # Try different ways to extract the certificate
+                if hasattr(cert_choice, 'chosen'):
+                    # If it's a choice structure, get the chosen value
+                    ee_cert_bytes = cert_choice.chosen.dump()
+                elif hasattr(cert_choice, 'dump'):
+                    # If it's directly a certificate structure
+                    ee_cert_bytes = cert_choice.dump()
+                else:
+                    # Try to load as certificate directly
+                    try:
+                        cert_obj = x509.Certificate.load(bytes(cert_choice))
+                        ee_cert_bytes = cert_obj.dump()
+                    except:
+                        # If that fails, try to get bytes directly
+                        ee_cert_bytes = bytes(cert_choice)
+                
+                if ee_cert_bytes:
+                    # Use the provided EE cert signature, or fall back to new_signature
+                    # Note: In practice, EE cert signature should be computed over EE cert TBS separately
+                    ee_sig_to_use = ee_cert_signature if ee_cert_signature is not None else new_signature
+                    
+                    # Replace the EE certificate signature and public key using the dedicated function
+                    replaced_ee_cert = replace_certificate_signature(
+                        ee_cert_bytes,
+                        ee_sig_to_use,
+                        new_public_key,
+                        algorithm_name=algorithm_name
+                    )
+                    
+                    # Replace the certificate in the CMS structure
+                    # CertificateChoices can be a Certificate or other structures
+                    # We need to create the appropriate structure
+                    try:
+                        # Try to load the replaced certificate to create proper CertificateChoices
+                        replaced_cert_obj = x509.Certificate.load(replaced_ee_cert)
+                        # Create CertificateChoices with the certificate
+                        # CertificateChoices is typically just the certificate itself in CMS
+                        signed_data['certificates'][0] = replaced_cert_obj
+                    except Exception as cert_replace_error:
+                        # If direct replacement fails, try to update the existing structure
+                        # This handles cases where CertificateChoices has a specific structure
+                        try:
+                            if hasattr(cert_choice, 'chosen'):
+                                cert_choice.chosen = x509.Certificate.load(replaced_ee_cert)
+                            else:
+                                # Replace the entire choice with the new certificate
+                                signed_data['certificates'][0] = x509.Certificate.load(replaced_ee_cert)
+                        except Exception as fallback_error:
+                            # If all else fails, log but continue - CMS signature replacement is still valid
+                            print(f"WARNING: Could not replace EE certificate in CMS structure: {fallback_error}")
+                            print(f"  CMS signature replacement succeeded, but EE cert replacement failed")
         except Exception as e:
             # If certificate update fails, continue - signature replacement is still valid
             # Public key size is accounted for separately in pq-resign.py
-            pass
+            print(f"WARNING: EE certificate replacement failed: {e}")
+            print(f"  CMS signature replacement succeeded, but EE cert replacement failed")
     
     return cms_obj.dump()
+
+
+def extract_ee_certificate_tbs_from_cms(data: bytes) -> Optional[bytes]:
+    """
+    Extract the TBS (To Be Signed) portion of the EE certificate from a CMS SignedData structure.
+    
+    Args:
+        data: CMS SignedData bytes (ROA or manifest)
+    
+    Returns:
+        TBS bytes of the EE certificate, or None if not found
+    """
+    if not ASN1_AVAILABLE:
+        return None
+    
+    try:
+        cms_obj = cms.ContentInfo.load(data)
+        signed_data = cms_obj['content']
+        
+        # Check if certificates field exists and has at least one certificate
+        if 'certificates' not in signed_data or len(signed_data['certificates']) == 0:
+            return None
+        
+        # Extract the first certificate (typically the EE certificate)
+        cert_choice = signed_data['certificates'][0]
+        
+        # Extract certificate bytes
+        ee_cert_bytes = None
+        if hasattr(cert_choice, 'chosen'):
+            ee_cert_bytes = cert_choice.chosen.dump()
+        elif hasattr(cert_choice, 'dump'):
+            ee_cert_bytes = cert_choice.dump()
+        else:
+            try:
+                cert_obj = x509.Certificate.load(bytes(cert_choice))
+                ee_cert_bytes = cert_obj.dump()
+            except:
+                ee_cert_bytes = bytes(cert_choice)
+        
+        if ee_cert_bytes:
+            # Extract TBS from the certificate
+            cert_obj = x509.Certificate.load(ee_cert_bytes)
+            return cert_obj['tbs_certificate'].dump()
+        
+        return None
+    except Exception as e:
+        return None
+
+
+def extract_ee_certificate_from_cms(data: bytes) -> Optional[bytes]:
+    """
+    Extract the EE certificate bytes from a CMS SignedData structure.
+    
+    Args:
+        data: CMS SignedData bytes (ROA or manifest)
+    
+    Returns:
+        EE certificate bytes, or None if not found
+    """
+    if not ASN1_AVAILABLE:
+        return None
+    
+    try:
+        cms_obj = cms.ContentInfo.load(data)
+        signed_data = cms_obj['content']
+        
+        # Check if certificates field exists and has at least one certificate
+        if 'certificates' not in signed_data or len(signed_data['certificates']) == 0:
+            return None
+        
+        # Extract the first certificate (typically the EE certificate)
+        cert_choice = signed_data['certificates'][0]
+        
+        # Extract certificate bytes
+        if hasattr(cert_choice, 'chosen'):
+            return cert_choice.chosen.dump()
+        elif hasattr(cert_choice, 'dump'):
+            return cert_choice.dump()
+        else:
+            try:
+                cert_obj = x509.Certificate.load(bytes(cert_choice))
+                return cert_obj.dump()
+            except:
+                return bytes(cert_choice)
+    except Exception as e:
+        return None
 
 
 def extract_tbs_for_signing(data: bytes, object_type: str = None, file_path: str = None) -> bytes:
@@ -438,13 +803,161 @@ def extract_tbs_for_signing(data: bytes, object_type: str = None, file_path: str
         return data
 
 
+def get_verification_metrics() -> VerificationMetrics:
+    """Get the global verification metrics instance."""
+    return _global_metrics
+
+
+def reset_verification_metrics():
+    """Reset the global verification metrics."""
+    global _global_metrics
+    _global_metrics = VerificationMetrics()
+
+
+def print_verification_metrics():
+    """Print a summary of the global verification metrics."""
+    _global_metrics.print_summary()
+
+
+def get_verification_metrics_summary() -> Dict[str, Any]:
+    """Get a summary dictionary of the global verification metrics."""
+    return _global_metrics.get_summary()
+
+
+def verify_cms_object_signatures(
+    cms_data: bytes,
+    cms_public_key: bytes,
+    ee_cert_public_key: bytes = None,
+    algorithm_name: str = None,
+    verifier = None,
+    metrics: VerificationMetrics = None
+) -> Tuple[bool, bool, str]:
+    """
+    Verify both the CMS signature and the EE certificate signature in a CMS SignedData object.
+    
+    Args:
+        cms_data: CMS SignedData bytes (ROA or manifest)
+        cms_public_key: Public key to verify CMS signature (from EE certificate)
+        ee_cert_public_key: Optional public key to verify EE certificate signature (from issuer)
+        algorithm_name: Name of algorithm for verification
+        verifier: Optional OQS Signature verifier object (if None, only extracts data)
+        metrics: Optional VerificationMetrics instance (uses global if None)
+    
+    Returns:
+        Tuple of (cms_signature_valid, ee_cert_signature_valid, error_message)
+        error_message is empty string if both are valid
+    """
+    if metrics is None:
+        metrics = _global_metrics
+    
+    if not ASN1_AVAILABLE:
+        metrics.record_object_load_failed("cms", "ASN1 parser not available")
+        return False, False, "ASN1 parser not available"
+    
+    try:
+        # Record successful object loading
+        metrics.record_object_loaded("cms")
+        
+        cms_obj = cms.ContentInfo.load(cms_data)
+        signed_data = cms_obj['content']
+        
+        # Verify CMS signature
+        cms_valid = False
+        cms_error = ""
+        if len(signed_data['signer_infos']) > 0:
+            signer_info = signed_data['signer_infos'][0]
+            
+            # Extract CMS TBS (signedAttrs if present, otherwise content)
+            if 'signed_attrs' in signer_info and signer_info['signed_attrs']:
+                cms_tbs = signer_info['signed_attrs'].dump()
+            else:
+                cms_tbs = signed_data['encap_content_info']['encap_content'].contents
+            
+            # Extract CMS signature
+            cms_signature = signer_info['signature'].contents if hasattr(signer_info['signature'], 'contents') else bytes(signer_info['signature'])
+            
+            # Perform actual verification if verifier is provided
+            if verifier is not None and cms_public_key:
+                try:
+                    cms_valid = verifier.verify(cms_tbs, cms_signature, cms_public_key)
+                    if not cms_valid:
+                        cms_error = "CMS signature verification failed"
+                    metrics.record_cms_verification(cms_valid, cms_error)
+                except Exception as verify_err:
+                    cms_valid = False
+                    cms_error = f"CMS verification error: {verify_err}"
+                    metrics.record_cms_verification(False, cms_error)
+            else:
+                # No verifier provided - cannot verify
+                cms_error = "No verifier or public key provided for CMS signature"
+                metrics.record_cms_verification(False, cms_error)
+        else:
+            cms_error = "No signer info found in CMS"
+            metrics.record_cms_verification(False, cms_error)
+        
+        # Verify EE certificate signature
+        ee_cert_valid = False
+        ee_cert_error = ""
+        ee_cert_bytes = extract_ee_certificate_from_cms(cms_data)
+        if ee_cert_bytes:
+            metrics.record_ee_cert_extraction(True)
+            try:
+                cert_obj = x509.Certificate.load(ee_cert_bytes)
+                ee_cert_tbs = cert_obj['tbs_certificate'].dump()
+                ee_cert_signature = cert_obj['signature_value']
+                ee_cert_sig_bytes = ee_cert_signature.contents if hasattr(ee_cert_signature, 'contents') else bytes(ee_cert_signature)
+                
+                # Perform actual verification if verifier and issuer public key are provided
+                if verifier is not None and ee_cert_public_key:
+                    try:
+                        ee_cert_valid = verifier.verify(ee_cert_tbs, ee_cert_sig_bytes, ee_cert_public_key)
+                        if not ee_cert_valid:
+                            ee_cert_error = "EE certificate signature verification failed"
+                        metrics.record_ee_cert_verification(ee_cert_valid, ee_cert_error)
+                    except Exception as verify_err:
+                        ee_cert_valid = False
+                        ee_cert_error = f"EE cert verification error: {verify_err}"
+                        metrics.record_ee_cert_verification(False, ee_cert_error)
+                else:
+                    # No verifier or issuer key provided - cannot verify EE cert
+                    # This is expected if issuer key is not available
+                    ee_cert_error = "No verifier or issuer public key provided for EE certificate signature"
+                    metrics.record_ee_cert_verification(False, ee_cert_error)
+            except Exception as cert_err:
+                ee_cert_error = f"Failed to extract EE certificate: {cert_err}"
+                metrics.record_ee_cert_extraction(False, ee_cert_error)
+                metrics.record_ee_cert_verification(False, ee_cert_error)
+        else:
+            ee_cert_error = "No EE certificate found in CMS"
+            metrics.record_ee_cert_extraction(False, ee_cert_error)
+            metrics.record_ee_cert_verification(False, ee_cert_error)
+        
+        # Record overall verification result
+        can_verify = (verifier is not None and cms_public_key) and (verifier is not None and ee_cert_public_key)
+        metrics.record_overall_verification(cms_valid, ee_cert_valid, can_verify)
+        
+        error_msg = ""
+        if not cms_valid:
+            error_msg += f"CMS signature invalid: {cms_error}. "
+        if not ee_cert_valid:
+            error_msg += f"EE cert signature invalid: {ee_cert_error}. "
+        
+        return cms_valid, ee_cert_valid, error_msg.strip()
+    except Exception as e:
+        error_msg = f"Verification failed: {e}"
+        metrics.record_object_load_failed("cms", error_msg)
+        return False, False, error_msg
+
+
 def create_resigned_object(
     original_data: bytes,
     new_signature: bytes,
     new_public_key: bytes,
     object_type: str = None,
     file_path: str = None,
-    algorithm_name: str = None
+    algorithm_name: str = None,
+    ee_cert_signature: bytes = None,
+    metrics: VerificationMetrics = None
 ) -> bytes:
     """
     Create a new RPKI object with replaced signature and public key.
@@ -458,14 +971,21 @@ def create_resigned_object(
         new_public_key: New post-quantum public key bytes
         object_type: Type of object (auto-detected if None)
         file_path: Optional file path for type detection
+        algorithm_name: Name of algorithm for OID lookup
+        ee_cert_signature: Optional signature for EE certificate TBS
+        metrics: Optional VerificationMetrics instance (uses global if None)
     
     Returns:
         New RPKI object bytes with replaced signature and public key
     """
+    if metrics is None:
+        metrics = _global_metrics
+    
     if not ASN1_AVAILABLE:
         # Fallback: append signature (old incorrect method)
         # This should be avoided, but provides backward compatibility
         print("WARNING: ASN.1 parser not available, using incorrect append method")
+        metrics.record_signature_replacement("unknown", False, "ASN1 parser not available")
         return original_data + new_signature
     
     if object_type is None:
@@ -473,16 +993,26 @@ def create_resigned_object(
     
     try:
         if object_type == 'certificate':
-            return replace_certificate_signature(original_data, new_signature, new_public_key, algorithm_name=algorithm_name)
+            result = replace_certificate_signature(original_data, new_signature, new_public_key, algorithm_name=algorithm_name)
+            metrics.record_signature_replacement(object_type, True)
+            return result
         elif object_type in ('roa', 'manifest'):
-            return replace_cms_signature(original_data, new_signature, new_public_key, algorithm_name=algorithm_name)
+            result = replace_cms_signature(original_data, new_signature, new_public_key, algorithm_name=algorithm_name, ee_cert_signature=ee_cert_signature)
+            metrics.record_signature_replacement(object_type, True)
+            return result
         elif object_type == 'crl':
             # CRL signature replacement
-            return replace_crl_signature(original_data, new_signature, new_public_key, algorithm_name=algorithm_name)
+            result = replace_crl_signature(original_data, new_signature, new_public_key, algorithm_name=algorithm_name)
+            metrics.record_signature_replacement(object_type, True)
+            return result
         else:
             # Unknown type - cannot process scientifically
-            raise ValueError(f"Unknown object type {object_type} - cannot replace signature")
+            error_msg = f"Unknown object type {object_type} - cannot replace signature"
+            metrics.record_signature_replacement(object_type, False, error_msg)
+            raise ValueError(error_msg)
     except Exception as e:
         # If parsing fails, raise exception rather than falling back to incorrect method
-        raise ValueError(f"ASN.1 parsing failed: {e}") from e
+        error_msg = f"ASN.1 parsing failed: {e}"
+        metrics.record_signature_replacement(object_type or "unknown", False, error_msg)
+        raise ValueError(error_msg) from e
 

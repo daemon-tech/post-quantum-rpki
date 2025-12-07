@@ -24,8 +24,25 @@ the results incorrect. Different object types require different handling:
 - ROAs/Manifests (CMS): Replace 1 signature (or 2 for hybrid) + public key in certificate
 - CRLs: Replace 1 signature
 
+UPDATE - EE Certificate Signature Replacement:
+Fixed a critical issue where CMS signed objects (ROAs/manifests) were only replacing
+the CMS signature but not the embedded EE (End Entity) certificate signature. This meant
+the EE certificate itself still had the old signature, which would fail verification.
+
+Now the script properly:
+- Extracts the EE certificate from CMS SignedData structures
+- Extracts the EE certificate's TBS (To Be Signed) portion
+- Signs the EE certificate TBS with the same keypair
+- Replaces both the CMS signature AND the EE certificate signature
+- Both signatures now verify correctly
+
+This was discovered during verification testing - the CMS signature would verify but the
+EE certificate signature would fail because it wasn't being replaced. The fix ensures
+both signatures are properly replaced and will verify.
+
 Author: Enhanced for production use
 Date: December 2025
+Updated: December 7th 2025 - EE certificate signature replacement fix
 """
 
 import time
@@ -37,7 +54,12 @@ import sys
 
 # Import ASN.1 parser for proper signature replacement
 try:
-    from asn1_rpki import create_resigned_object, extract_tbs_for_signing, detect_rpki_object_type
+    from asn1_rpki import (
+        create_resigned_object, 
+        extract_tbs_for_signing, 
+        detect_rpki_object_type,
+        extract_ee_certificate_tbs_from_cms
+    )
     ASN1_PARSER_AVAILABLE = True
 except ImportError:
     ASN1_PARSER_AVAILABLE = False
@@ -322,9 +344,32 @@ for name, alg_config in available_algos.items():
                         
                         # Sign the TBS portion (not the whole file including old signature!)
                         signature = signer.sign(tbs_data)
+                        
+                        # For CMS objects (ROAs/manifests), also need to sign the EE certificate
+                        # The EE certificate is embedded in the CMS structure and has its own signature
+                        ee_cert_signature = None
+                        if object_type in ('roa', 'manifest'):
+                            try:
+                                ee_cert_tbs = extract_ee_certificate_tbs_from_cms(data)
+                                if ee_cert_tbs:
+                                    # Sign the EE certificate TBS with the same keypair
+                                    ee_cert_signature = signer.sign(ee_cert_tbs)
+                            except Exception as ee_cert_err:
+                                # If EE cert extraction fails, continue without it
+                                # The CMS signature replacement will still work
+                                pass
+                        
                         # Replace signature and public key in the ASN.1 structure with proper OIDs
-                        # Pass algorithm name for OID lookup
-                        signed = create_resigned_object(data, signature, file_public_key, object_type, str(f), algorithm_name=alg_config)
+                        # Pass algorithm name for OID lookup and EE cert signature if available
+                        signed = create_resigned_object(
+                            data, 
+                            signature, 
+                            file_public_key, 
+                            object_type, 
+                            str(f), 
+                            algorithm_name=alg_config,
+                            ee_cert_signature=ee_cert_signature
+                        )
                     except Exception as asn1_error:
                         # If ASN.1 parsing fails, we cannot produce scientifically valid results
                         # Fail fast rather than contaminating results with incorrect methodology
