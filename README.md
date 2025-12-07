@@ -50,7 +50,7 @@ Key Findings
 
 **Falcon-512 is the only viable path forward so far.**
 
-Full results: [RESULTS.md](RESULTS.md)  
+Full results: [RESULTS.md](/results/RESULTS.md)  
 
 ## Reproducibility
 
