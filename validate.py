@@ -1,17 +1,44 @@
 #!/usr/bin/env python3
 """
-validate.py Scientific validation of post-quantum RPKI signatures
+validate.py - Scientific validation of post-quantum RPKI signatures
 
-This script validates re-signed RPKI objects and collects comprehensive metrics
-for scientific analysis. It measures validation time, size overhead, signature
-verification rates, and detailed performance characteristics.
+This script takes a directory of re-signed RPKI objects (organized by algorithm)
+and runs comprehensive validation and metrics collection. The main goal is to
+measure how post-quantum signatures perform compared to traditional ECDSA in
+real-world RPKI deployments.
 
-Key features:
-- Comprehensive metrics collection (file types, sizes, timing)
-- Live metrics display during processing
-- Direct signature verification with proper ASN.1 extraction
-- rpki-client validation attempt (for future compatibility)
-- Detailed performance breakdowns
+What it does:
+- Scans algorithm directories (e.g., /data/signed/Falcon-512, /data/signed/ML-DSA-44)
+- Validates each object's CMS signature and embedded EE certificate signature
+- Measures file sizes, signature sizes, public key sizes, and verification times
+- Collects detailed per-object-type metrics (ROAs, Manifests, CRLs, etc.)
+- Tracks verification success/failure rates and error categories
+- Calculates statistical distributions (percentiles, variance) for analysis
+- Outputs results to CSV and JSON for further analysis
+
+The script uses direct ASN.1 parsing to extract signatures and verify them with
+the OQS library, so we get accurate measurements without relying on external
+tools. It also attempts rpki-client validation for compatibility checking, but
+the main metrics come from our direct verification.
+
+All results are saved to the results/ directory as results.csv (for spreadsheet
+analysis) and results.json (for programmatic access). The CSV is flattened for
+easy import, while the JSON preserves the full nested structure with all the
+detailed metrics.
+
+Key metrics collected:
+- Verification times (with percentiles P25/P50/P75/P95/P99)
+- Signature and public key sizes (with variance and distributions)
+- File sizes and total repository sizes
+- Per-object-type breakdowns (ROA, Manifest, CRL, etc.)
+- EE certificate extraction and verification rates
+- CMS vs EE cert signature verification (tracked separately)
+- Error categorization and samples
+- Comprehensive VerificationMetrics from asn1_rpki.py
+
+The script shows live progress with detailed metrics during execution, and
+prints a comprehensive summary at the end comparing all algorithms against
+the ECDSA baseline.
 
 Author: Sam Moes
 Date: December 2025
@@ -38,7 +65,16 @@ except ImportError:
 
 # Import ASN.1 parser for proper signature extraction
 try:
-    from asn1_rpki import extract_signature_and_tbs, detect_rpki_object_type
+    from asn1_rpki import (
+        extract_signature_and_tbs, 
+        detect_rpki_object_type,
+        verify_cms_object_signatures,
+        extract_ee_certificate_from_cms,
+        extract_issuer_certificate_from_cms,
+        get_verification_metrics,
+        reset_verification_metrics,
+        print_verification_metrics
+    )
     ASN1_EXTRACTION_AVAILABLE = True
 except ImportError:
     ASN1_EXTRACTION_AVAILABLE = False
@@ -106,9 +142,20 @@ for repo in sorted(repos.iterdir()):
     
     algo = repo.name
     
+    # Normalize algorithm name (handle case variations)
+    algo_lower = algo.lower()
+    if algo_lower in ["ecdsa", "ecdsa-baseline", "baseline"]:
+        algo = "ecdsa-baseline"
+    elif algo_lower == "dilithium2":
+        algo = "dilithium2"
+    elif algo_lower == "dilithium3":
+        algo = "dilithium3"
+    elif algo_lower in ["falcon512", "falcon-512"]:
+        algo = "falcon512"
+    
     # Skip if not in our algorithm list
     if algo not in ALGO_METADATA:
-        print(f"\nSkipping {algo} (not in current algorithm set)")
+        print(f"\nSkipping {repo.name} (not in current algorithm set)")
         continue
     
     print(f"\n{'='*80}")
@@ -242,6 +289,35 @@ for repo in sorted(repos.iterdir()):
             public_key_sizes = []
             object_type_counts = defaultdict(int)
             
+            # Enhanced metrics collection
+            reset_verification_metrics()
+            metrics = get_verification_metrics()
+            
+            # Per-object-type detailed metrics
+            per_type_metrics = defaultdict(lambda: {
+                'count': 0,
+                'verified': 0,
+                'failed': 0,
+                'verify_times': [],
+                'sig_sizes': [],
+                'pubkey_sizes': [],
+                'ee_certs_found': 0,
+                'issuer_certs_found': 0,
+                'cms_valid': 0,
+                'ee_cert_valid': 0,
+                'both_valid': 0
+            })
+            
+            # Size distribution data (for histograms/percentiles)
+            all_file_sizes = []
+            all_signature_sizes = []
+            all_public_key_sizes = []
+            all_verification_times = []
+            
+            # Error categorization
+            error_categories = defaultdict(int)
+            error_details = []
+            
             verify_start = time.time()
             
             # Progress bar with live metrics
@@ -270,43 +346,132 @@ for repo in sorted(repos.iterdir()):
                 try:
                     file_start = time.time()
                     signed_data = f.read_bytes()
+                    file_size = len(signed_data)
+                    all_file_sizes.append(file_size)
                     
                     # Properly extract signature and TBS from ASN.1 structure
                     if ASN1_EXTRACTION_AVAILABLE:
                         try:
                             object_type = detect_rpki_object_type(signed_data, str(f))
                             object_type_counts[object_type] += 1
+                            metrics.record_object_loaded(object_type)
+                            
+                            # Update per-type metrics
+                            type_metrics = per_type_metrics[object_type]
+                            type_metrics['count'] += 1
                             
                             tbs_data, signature = extract_signature_and_tbs(signed_data, object_type, str(f))
                             
                             # Collect signature size
-                            signature_sizes.append(len(signature))
+                            sig_size = len(signature)
+                            signature_sizes.append(sig_size)
+                            all_signature_sizes.append(sig_size)
+                            type_metrics['sig_sizes'].append(sig_size)
                             
-                            # Verify signature with correct TBS data
-                            is_valid = verifier.verify(tbs_data, signature, public_key)
+                            # For CMS objects, extract and verify EE certificate separately
+                            cms_valid = False
+                            ee_cert_valid = False
+                            ee_cert_found = False
+                            issuer_cert_found = False
+                            
+                            if object_type in ('roa', 'manifest'):
+                                # Try to extract EE certificate
+                                ee_cert_bytes = extract_ee_certificate_from_cms(signed_data)
+                                if ee_cert_bytes:
+                                    ee_cert_found = True
+                                    type_metrics['ee_certs_found'] += 1
+                                    metrics.record_ee_cert_extraction(True)
+                                    
+                                    # Check for issuer cert
+                                    issuer_cert_bytes = extract_issuer_certificate_from_cms(signed_data)
+                                    if issuer_cert_bytes:
+                                        issuer_cert_found = True
+                                        type_metrics['issuer_certs_found'] += 1
+                                    
+                                    # Extract public key from EE cert for verification
+                                    try:
+                                        from asn1crypto import x509
+                                        ee_cert = x509.Certificate.load(ee_cert_bytes)
+                                        ee_pubkey_info = ee_cert['tbs_certificate']['subject_public_key_info']
+                                        ee_pubkey = ee_pubkey_info['public_key'].contents
+                                        ee_pubkey_size = len(ee_pubkey)
+                                        public_key_sizes.append(ee_pubkey_size)
+                                        all_public_key_sizes.append(ee_pubkey_size)
+                                        type_metrics['pubkey_sizes'].append(ee_pubkey_size)
+                                        
+                                        # Verify both CMS and EE cert signatures
+                                        cms_valid, ee_cert_valid, error_msg = verify_cms_object_signatures(
+                                            signed_data,
+                                            ee_pubkey,  # CMS signature uses EE cert's public key
+                                            None,  # Issuer key not available
+                                            algo_name,
+                                            verifier,
+                                            metrics
+                                        )
+                                        
+                                        if cms_valid:
+                                            type_metrics['cms_valid'] += 1
+                                        if ee_cert_valid:
+                                            type_metrics['ee_cert_valid'] += 1
+                                        if cms_valid and ee_cert_valid:
+                                            type_metrics['both_valid'] += 1
+                                        
+                                        # Use CMS verification result as primary
+                                        is_valid = cms_valid
+                                    except Exception as ee_err:
+                                        # EE cert extraction/verification failed, fall back to basic verification
+                                        error_categories['ee_cert_extraction_error'] += 1
+                                        error_details.append(f"{f.name}: EE cert error: {ee_err}")
+                                        is_valid = verifier.verify(tbs_data, signature, public_key)
+                                else:
+                                    # No EE cert, verify CMS signature only
+                                    metrics.record_ee_cert_extraction(False, "No EE cert found")
+                                    is_valid = verifier.verify(tbs_data, signature, public_key)
+                            else:
+                                # Non-CMS object, standard verification
+                                is_valid = verifier.verify(tbs_data, signature, public_key)
+                            
                             verification_time = time.time() - file_start
                             verification_times.append(verification_time)
+                            all_verification_times.append(verification_time)
+                            type_metrics['verify_times'].append(verification_time)
                             
                             if is_valid:
                                 verified_count += 1
+                                type_metrics['verified'] += 1
                             else:
                                 failed_count += 1
+                                type_metrics['failed'] += 1
+                                error_categories['verification_failed'] += 1
+                                error_details.append(f"{f.name}: Signature verification failed")
                                 
                         except Exception as asn1_err:
                             asn1_extraction_failures += 1
                             failed_count += 1
+                            error_categories['asn1_extraction_error'] += 1
+                            error_details.append(f"{f.name}: ASN.1 error: {asn1_err}")
+                            metrics.record_object_load_failed("unknown", str(asn1_err))
                             # Log but continue
                     else:
                         # ASN.1 extraction not available - cannot verify properly
                         failed_count += 1
+                        error_categories['asn1_not_available'] += 1
                     
                     # Update progress bar with live metrics
                     current_time = time.time() - verify_start
                     if current_time > 0:
+                        # Get current metrics summary
+                        current_metrics = metrics.get_summary()
+                        ee_extracted = current_metrics['ee_certificate']['extracted']
+                        ee_valid = current_metrics['ee_certificate']['signatures_valid']
+                        cms_valid = current_metrics['cms_signature_verification']['valid']
+                        
                         verify_pbar.set_postfix({
                             'OK': f"{verified_count}",
                             'FAIL': f"{failed_count}",
-                            'ASN1_ERR': f"{asn1_extraction_failures}",
+                            'EE': f"{ee_extracted}",
+                            'CMS_OK': f"{cms_valid}",
+                            'EE_OK': f"{ee_valid}",
                             'Rate': f"{(verified_count + failed_count) / current_time:.1f}/s",
                             'AvgTime': f"{sum(verification_times)/len(verification_times)*1000:.1f}ms" if verification_times else "N/A"
                         })
@@ -331,33 +496,136 @@ for repo in sorted(repos.iterdir()):
                 avg_sig_size = sum(signature_sizes) / len(signature_sizes)
                 min_sig_size = min(signature_sizes)
                 max_sig_size = max(signature_sizes)
+                # Calculate percentiles for distribution analysis
+                sorted_sigs = sorted(signature_sizes)
+                p25_sig_size = sorted_sigs[len(sorted_sigs) // 4] if sorted_sigs else 0
+                p50_sig_size = sorted_sigs[len(sorted_sigs) // 2] if sorted_sigs else 0
+                p75_sig_size = sorted_sigs[3 * len(sorted_sigs) // 4] if sorted_sigs else 0
+                p95_sig_size = sorted_sigs[95 * len(sorted_sigs) // 100] if sorted_sigs else 0
+                p99_sig_size = sorted_sigs[99 * len(sorted_sigs) // 100] if sorted_sigs else 0
             else:
                 avg_sig_size = min_sig_size = max_sig_size = expected_sig_size
+                p25_sig_size = p50_sig_size = p75_sig_size = p95_sig_size = p99_sig_size = expected_sig_size
+            
+            # Calculate percentiles for verification times
+            if verification_times:
+                sorted_times = sorted(verification_times)
+                p25_verify_time = sorted_times[len(sorted_times) // 4] if sorted_times else 0
+                p50_verify_time = sorted_times[len(sorted_times) // 2] if sorted_times else 0
+                p75_verify_time = sorted_times[3 * len(sorted_times) // 4] if sorted_times else 0
+                p95_verify_time = sorted_times[95 * len(sorted_times) // 100] if sorted_times else 0
+                p99_verify_time = sorted_times[99 * len(sorted_times) // 100] if sorted_times else 0
+            else:
+                p25_verify_time = p50_verify_time = p75_verify_time = p95_verify_time = p99_verify_time = 0
+            
+            # Calculate percentiles for file sizes
+            if all_file_sizes:
+                sorted_file_sizes = sorted(all_file_sizes)
+                p25_file_size = sorted_file_sizes[len(sorted_file_sizes) // 4] if sorted_file_sizes else 0
+                p50_file_size = sorted_file_sizes[len(sorted_file_sizes) // 2] if sorted_file_sizes else 0
+                p75_file_size = sorted_file_sizes[3 * len(sorted_file_sizes) // 4] if sorted_file_sizes else 0
+                p95_file_size = sorted_file_sizes[95 * len(sorted_file_sizes) // 100] if sorted_file_sizes else 0
+                p99_file_size = sorted_file_sizes[99 * len(sorted_file_sizes) // 100] if sorted_file_sizes else 0
+            else:
+                p25_file_size = p50_file_size = p75_file_size = p95_file_size = p99_file_size = 0
+            
+            # Public key size statistics
+            if public_key_sizes:
+                avg_pubkey_size = sum(public_key_sizes) / len(public_key_sizes)
+                min_pubkey_size = min(public_key_sizes)
+                max_pubkey_size = max(public_key_sizes)
+                sorted_pubkeys = sorted(public_key_sizes)
+                p50_pubkey_size = sorted_pubkeys[len(sorted_pubkeys) // 2] if sorted_pubkeys else 0
+            else:
+                avg_pubkey_size = min_pubkey_size = max_pubkey_size = p50_pubkey_size = expected_pubkey_size
             
             # Extrapolate to full dataset
             if sample_size > 0 and verify_elapsed > 0:
                 time_per_file = verify_elapsed / sample_size
                 estimated_total_time = time_per_file * file_count
                 
+                # Process per-type metrics
+                per_type_summary = {}
+                for obj_type, type_metrics in per_type_metrics.items():
+                    if type_metrics['count'] > 0:
+                        per_type_summary[obj_type] = {
+                            'count': type_metrics['count'],
+                            'verified': type_metrics['verified'],
+                            'failed': type_metrics['failed'],
+                            'verification_rate': type_metrics['verified'] / type_metrics['count'] * 100,
+                            'avg_verify_time_ms': (sum(type_metrics['verify_times']) / len(type_metrics['verify_times']) * 1000) if type_metrics['verify_times'] else 0,
+                            'avg_sig_size_bytes': (sum(type_metrics['sig_sizes']) / len(type_metrics['sig_sizes'])) if type_metrics['sig_sizes'] else 0,
+                            'avg_pubkey_size_bytes': (sum(type_metrics['pubkey_sizes']) / len(type_metrics['pubkey_sizes'])) if type_metrics['pubkey_sizes'] else 0,
+                            'ee_certs_found': type_metrics['ee_certs_found'],
+                            'issuer_certs_found': type_metrics['issuer_certs_found'],
+                            'cms_valid_count': type_metrics['cms_valid'],
+                            'ee_cert_valid_count': type_metrics['ee_cert_valid'],
+                            'both_valid_count': type_metrics['both_valid']
+                        }
+                
+                # Get comprehensive metrics summary
+                metrics_summary = metrics.get_summary()
+                
                 signature_verification_results = {
                     "sampled": sample_size,
                     "verified": verified_count,
                     "failed": failed_count,
+                    "verification_rate_pct": (verified_count / sample_size * 100) if sample_size > 0 else 0,
                     "asn1_extraction_failures": asn1_extraction_failures,
                     "verify_time_sec": verify_elapsed,
                     "time_per_file_sec": time_per_file,
                     "estimated_total_time_sec": estimated_total_time,
                     "verification_rate_per_sec": sample_size / verify_elapsed if verify_elapsed > 0 else 0,
+                    
+                    # Verification time statistics (all in milliseconds)
                     "min_verify_time_ms": min_verify_time * 1000,
                     "max_verify_time_ms": max_verify_time * 1000,
                     "avg_verify_time_ms": avg_verify_time * 1000,
                     "median_verify_time_ms": median_verify_time * 1000,
+                    "p25_verify_time_ms": p25_verify_time * 1000,
+                    "p50_verify_time_ms": p50_verify_time * 1000,
+                    "p75_verify_time_ms": p75_verify_time * 1000,
+                    "p95_verify_time_ms": p95_verify_time * 1000,
+                    "p99_verify_time_ms": p99_verify_time * 1000,
+                    
+                    # Signature size statistics
                     "signature_size_avg_bytes": avg_sig_size,
                     "signature_size_min_bytes": min_sig_size,
                     "signature_size_max_bytes": max_sig_size,
+                    "signature_size_p25_bytes": p25_sig_size,
+                    "signature_size_p50_bytes": p50_sig_size,
+                    "signature_size_p75_bytes": p75_sig_size,
+                    "signature_size_p95_bytes": p95_sig_size,
+                    "signature_size_p99_bytes": p99_sig_size,
                     "expected_signature_size_bytes": expected_sig_size,
+                    "signature_size_variance": sum((s - avg_sig_size) ** 2 for s in signature_sizes) / len(signature_sizes) if signature_sizes else 0,
+                    
+                    # Public key size statistics
+                    "public_key_size_avg_bytes": avg_pubkey_size,
+                    "public_key_size_min_bytes": min_pubkey_size,
+                    "public_key_size_max_bytes": max_pubkey_size,
+                    "public_key_size_p50_bytes": p50_pubkey_size,
                     "expected_public_key_size_bytes": expected_pubkey_size,
-                    "object_type_breakdown": dict(object_type_counts)
+                    "public_key_size_variance": sum((p - avg_pubkey_size) ** 2 for p in public_key_sizes) / len(public_key_sizes) if public_key_sizes else 0,
+                    
+                    # File size statistics
+                    "file_size_p25_bytes": p25_file_size,
+                    "file_size_p50_bytes": p50_file_size,
+                    "file_size_p75_bytes": p75_file_size,
+                    "file_size_p95_bytes": p95_file_size,
+                    "file_size_p99_bytes": p99_file_size,
+                    
+                    # Object type breakdown
+                    "object_type_breakdown": dict(object_type_counts),
+                    "per_type_metrics": per_type_summary,
+                    
+                    # Error analysis
+                    "error_categories": dict(error_categories),
+                    "error_count": len(error_details),
+                    "error_sample": error_details[:20],  # First 20 errors for analysis
+                    
+                    # Comprehensive metrics from VerificationMetrics
+                    "detailed_metrics": metrics_summary
                 }
                 
                 print(f"  Verification complete:")
@@ -369,7 +637,42 @@ for repo in sorted(repos.iterdir()):
                 print(f"    Avg verification time: {avg_verify_time*1000:.2f}ms per signature")
                 print(f"    Estimated full validation: {estimated_total_time:.1f}s ({estimated_total_time/60:.1f} min)")
                 print(f"    Signature size: avg={avg_sig_size:.0f} bytes (expected={expected_sig_size})")
+                print(f"    Public key size: avg={avg_pubkey_size:.0f} bytes (expected={expected_pubkey_size})")
                 print(f"    Object types: {dict(object_type_counts)}")
+                
+                # Show per-type metrics
+                if per_type_summary:
+                    print(f"\n    Per-Type Metrics:")
+                    for obj_type, metrics_data in per_type_summary.items():
+                        print(f"      {obj_type}:")
+                        print(f"        Count: {metrics_data['count']}, Verified: {metrics_data['verified']} ({metrics_data['verification_rate']:.1f}%)")
+                        if metrics_data['ee_certs_found'] > 0:
+                            print(f"        EE certs found: {metrics_data['ee_certs_found']}, Issuer certs: {metrics_data['issuer_certs_found']}")
+                            print(f"        CMS valid: {metrics_data['cms_valid_count']}, EE cert valid: {metrics_data['ee_cert_valid_count']}, Both: {metrics_data['both_valid_count']}")
+                        if metrics_data['avg_verify_time_ms'] > 0:
+                            print(f"        Avg verify time: {metrics_data['avg_verify_time_ms']:.2f}ms")
+                        if metrics_data['avg_sig_size_bytes'] > 0:
+                            print(f"        Avg sig size: {metrics_data['avg_sig_size_bytes']:.0f} bytes")
+                
+                # Show error breakdown
+                if error_categories:
+                    print(f"\n    Error Breakdown:")
+                    for error_type, count in sorted(error_categories.items(), key=lambda x: x[1], reverse=True):
+                        print(f"      {error_type}: {count}")
+                
+                # Show percentiles
+                print(f"\n    Percentiles (P25/P50/P75/P95/P99):")
+                print(f"      Verification time: {p25_verify_time*1000:.2f}/{p50_verify_time*1000:.2f}/{p75_verify_time*1000:.2f}/{p95_verify_time*1000:.2f}/{p99_verify_time*1000:.2f} ms")
+                print(f"      Signature size: {p25_sig_size:.0f}/{p50_sig_size:.0f}/{p75_sig_size:.0f}/{p95_sig_size:.0f}/{p99_sig_size:.0f} bytes")
+                if public_key_sizes:
+                    print(f"      Public key size: {p50_pubkey_size:.0f} bytes (median)")
+                
+                # Show detailed metrics summary
+                print(f"\n    Detailed Metrics Summary:")
+                print(f"      EE Certificates: {metrics_summary['ee_certificate']['extracted']} extracted, {metrics_summary['ee_certificate']['extraction_failed']} failed")
+                print(f"      CMS Signatures: {metrics_summary['cms_signature_verification']['valid']} valid, {metrics_summary['cms_signature_verification']['invalid']} invalid")
+                print(f"      EE Cert Signatures: {metrics_summary['ee_certificate']['signatures_valid']} valid, {metrics_summary['ee_certificate']['signatures_invalid']} invalid")
+                print(f"      Overall: {metrics_summary['overall_verification']['fully_valid']} fully valid, {metrics_summary['overall_verification']['partially_valid']} partially valid")
                 
                 # Use estimated time for validation time
                 validation_time_sec = estimated_total_time
@@ -385,8 +688,12 @@ for repo in sorted(repos.iterdir()):
             signature_verification_results = {"error": str(e)}
     
     elif algo == "ecdsa-baseline":
-        # For baseline, measure file reading time
-        print(f"  Measuring file access time (baseline - no signatures)...")
+        # For ECDSA baseline, we measure file reading time since OQS doesn't support
+        # ECDSA signature verification. This gives us a baseline for file I/O overhead.
+        # Note: ECDSA signatures are not verified here - only file sizes and access times
+        # are measured. For actual ECDSA verification, you'd need the cryptography library
+        # or rpki-client, but we focus on PQ algorithms for this study.
+        print(f"  Measuring file access time (ECDSA baseline - signatures not verified with OQS)...")
         read_start = time.time()
         sample_size = min(1000, file_count)
         files_to_check = files[:sample_size]
@@ -464,9 +771,13 @@ for repo in sorted(repos.iterdir()):
             print(f"  Signature verification: {sig_res['verified']}/{sig_res['sampled']} verified, "
                   f"{sig_res.get('failed', 0)} failed, {sig_res.get('asn1_extraction_failures', 0)} ASN.1 errors")
 
+# Create results directory
+results_dir = Path("results")
+results_dir.mkdir(exist_ok=True)
+
 # Save comprehensive results to CSV
 import csv
-csv_path = Path("/work/results.csv")
+csv_path = results_dir / "results.csv"
 if not results:
     print("\nWARNING: No results to save. Check that /data/signed contains algorithm directories.")
     exit(1)
@@ -492,7 +803,7 @@ with open(csv_path, "w", newline="") as f:
         w.writerows(flat_results)
 
 # Save detailed JSON for programmatic access
-json_path = Path("/work/results.json")
+json_path = results_dir / "results.json"
 with open(json_path, "w") as f:
     json.dump({
         "experiment_metadata": {
