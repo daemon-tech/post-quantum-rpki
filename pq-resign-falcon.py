@@ -71,7 +71,9 @@ try:
         extract_tbs_for_signing, 
         detect_rpki_object_type,
         extract_ee_certificate_tbs_from_cms,
-        extract_issuer_certificate_from_cms
+        extract_issuer_certificate_from_cms,
+        get_verification_metrics,
+        reset_verification_metrics
     )
     ASN1_PARSER_AVAILABLE = True
 except ImportError:
@@ -256,6 +258,15 @@ for name, alg_config in available_algos.items():
     skipped_count = 0
     failed_count = 0
     
+    # Detailed metrics tracking
+    reset_verification_metrics()  # Reset metrics for this algorithm run
+    metrics = get_verification_metrics()
+    
+    # Track object-specific metrics
+    ee_certs_found = 0
+    issuer_certs_found = 0
+    object_type_counts = {}
+    
     # Resume from progress state if available
     if progress_state:
         processed_count = progress_state.get('processed_count', 0)
@@ -368,12 +379,16 @@ for name, alg_config in available_algos.items():
                             try:
                                 ee_cert_tbs = extract_ee_certificate_tbs_from_cms(data)
                                 if ee_cert_tbs:
+                                    ee_certs_found += 1
+                                    metrics.record_ee_cert_extraction(True)
+                                    
                                     # Try to find issuer certificate in CMS structure
                                     issuer_cert_bytes = extract_issuer_certificate_from_cms(data)
                                     
                                     if issuer_cert_bytes:
                                         # Found issuer cert - infrastructure ready for issuer-signed approach
                                         issuer_cert_found = True
+                                        issuer_certs_found += 1
                                         try:
                                             # Generate issuer keypair (ready for when OQS supports import_secret_key)
                                             issuer_keypair = signer.generate_keypair()
@@ -401,6 +416,7 @@ for name, alg_config in available_algos.items():
                             except Exception as ee_cert_err:
                                 # If EE cert extraction fails, continue without it
                                 # The CMS signature replacement will still work
+                                metrics.record_ee_cert_extraction(False, str(ee_cert_err))
                                 pass
                         
                         # Replace signature and public key in the ASN.1 structure with proper OIDs
@@ -414,12 +430,16 @@ for name, alg_config in available_algos.items():
                             algorithm_name=alg_config,
                             ee_cert_signature=ee_cert_signature,
                             issuer_private_key=issuer_private_key,
-                            issuer_public_key=issuer_public_key
+                            issuer_public_key=issuer_public_key,
+                            metrics=metrics
                         )
+                        # Signature replacement recorded by create_resigned_object
                     except Exception as asn1_error:
                         # If ASN.1 parsing fails, we cannot produce scientifically valid results
                         # Fail fast rather than contaminating results with incorrect methodology
                         failed_count += 1
+                        metrics.record_object_load_failed("unknown", f"ASN.1 parsing failed: {asn1_error}")
+                        metrics.record_signature_replacement("unknown", False, f"ASN.1 parsing failed: {asn1_error}")
                         error_log = dir_out / ".errors.log"
                         try:
                             with open(error_log, 'a') as log:
@@ -481,13 +501,22 @@ for name, alg_config in available_algos.items():
                 success_rate = (processed_count / (processed_count + failed_count) * 100) if (processed_count + failed_count) > 0 else 100
                 size_gb = total_size / (1024**3)
                 
+                # Get metrics summary for display
+                metrics_summary = metrics.get_summary()
+                ee_extracted = metrics_summary['ee_certificate']['extracted']
+                issuer_found = issuer_certs_found
+                
+                # Build object type string
+                obj_types_str = ",".join([f"{k}:{v}" for k, v in sorted(object_type_counts.items())])
+                
                 pbar.set_postfix({
                     'OK': f"{processed_count:,}",
                     'FAIL': f"{failed_count:,}",
                     'SKIP': f"{skipped_count:,}",
+                    'EE': f"{ee_extracted}",
+                    'Issuer': f"{issuer_found}",
                     'Size': f"{size_gb:.2f}GB",
-                    'Rate': f"{rate:.1f}/s",
-                    'Avg': f"{avg_size_kb:.1f}KB"
+                    'Rate': f"{rate:.1f}/s"
                 })
                 last_update_time = current_time
             
@@ -558,8 +587,23 @@ for name, alg_config in available_algos.items():
     if processed_count > 0 and elapsed > 0:
         print(f"  Rate:     {processed_count/elapsed:.1f} files/sec")
         print(f"  Avg Size: {total_size/processed_count/1024:.1f} KB/file")
+    
+    # Detailed metrics summary
+    metrics_summary = metrics.get_summary()
+    print(f"\n  Detailed Metrics:")
+    if metrics_summary['object_loading']['objects_by_type']:
+        print(f"    Object Types: {dict(metrics_summary['object_loading']['objects_by_type'])}")
+    print(f"    EE Certificates Extracted: {metrics_summary['ee_certificate']['extracted']}")
+    print(f"    EE Cert Extraction Failed: {metrics_summary['ee_certificate']['extraction_failed']}")
+    print(f"    Issuer Certificates Found: {issuer_certs_found}")
+    print(f"    Signatures Replaced: {metrics_summary['signature_replacement']['replaced']}")
+    print(f"    Signature Replacements Failed: {metrics_summary['signature_replacement']['failed']}")
+    if metrics_summary['signature_replacement']['replaced'] + metrics_summary['signature_replacement']['failed'] > 0:
+        success_rate = metrics_summary['signature_replacement']['success_rate']
+        print(f"    Replacement Success Rate: {success_rate:.2f}%")
+    
     if failed_count > 0:
-        print(f"  WARNING: Check {dir_out / '.errors.log'} for error details")
+        print(f"\n  WARNING: Check {dir_out / '.errors.log'} for error details")
     print()
 
 print("="*80)
