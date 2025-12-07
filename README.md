@@ -34,14 +34,13 @@ pq-rpki-2025/
 
 ### Key Result
 **Falcon-512 = only +36% repository size**  
-→ The Internet **survives** quantum computers.
+-> The Internet **survives** quantum computers.
 
 ML-DSA-44 (Dilithium-2) = +133% -> too big for current infrastructure.
 
 -> **Falcon-512 is the only viable path forward.** OLD
 
 Full results → [RESULTS.md](RESULTS.md)  
-Graphs → [validation-time.png](validation-time.png) | [repo-size.png](repo-size.png)
 
 ## Reproducibility
 
