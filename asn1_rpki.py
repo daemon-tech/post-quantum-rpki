@@ -11,7 +11,7 @@ from typing import Tuple, Optional, Dict, Any
 from pathlib import Path
 
 try:
-    from asn1crypto import x509, core, pem, cms, crl, keys
+    from asn1crypto import x509, core, pem, cms, crl, keys, algos
     ASN1_AVAILABLE = True
 except ImportError:
     ASN1_AVAILABLE = False
@@ -215,11 +215,13 @@ def replace_certificate_signature(
         oid_to_use = PQ_ALGORITHM_OIDS.get(algorithm_name)
     
     # Replace signatureAlgorithm with proper PQ OID
+    # Certificates use SignedDigestAlgorithmId which wraps the OID
     if oid_to_use:
-        pq_algorithm_id = {
-            'algorithm': core.ObjectIdentifier(oid_to_use),
+        # Use algos.SignedDigestAlgorithmId for certificates
+        pq_algorithm_id = algos.SignedDigestAlgorithm({
+            'algorithm': algos.SignedDigestAlgorithmId(oid_to_use),
             'parameters': core.Null()
-        }
+        })
         # Update in both tbs_certificate and outer certificate
         tbs_cert['signature'] = pq_algorithm_id
         cert['signature_algorithm'] = pq_algorithm_id
@@ -228,13 +230,14 @@ def replace_certificate_signature(
     if new_public_key and oid_to_use:
         try:
             # Create AlgorithmIdentifier for PQ public key
-            public_key_info = {
-                'algorithm': {
-                    'algorithm': core.ObjectIdentifier(oid_to_use),
+            # Public key algorithm uses AlgorithmIdentifier structure
+            public_key_info = keys.PublicKeyInfo({
+                'algorithm': keys.PublicKeyAlgorithm({
+                    'algorithm': keys.PublicKeyAlgorithmId(oid_to_use),
                     'parameters': core.Null()
-                },
+                }),
                 'public_key': core.BitString(bytes_to_bitstring_tuple(new_public_key))
-            }
+            })
             tbs_cert['subject_public_key_info'] = public_key_info
         except Exception as e:
             # If public key encoding fails, continue without it (size is still accounted for separately)
@@ -305,11 +308,12 @@ def replace_crl_signature(
         oid_to_use = PQ_ALGORITHM_OIDS[algorithm_name]
     
     # Replace signatureAlgorithm with proper PQ OID
+    # CRLs use SignedDigestAlgorithmId
     if oid_to_use:
-        pq_algorithm_id = {
-            'algorithm': core.ObjectIdentifier(oid_to_use),
+        pq_algorithm_id = algos.SignedDigestAlgorithm({
+            'algorithm': algos.SignedDigestAlgorithmId(oid_to_use),
             'parameters': core.Null()
-        }
+        })
         tbs_cert_list = crl_obj['tbs_cert_list']
         tbs_cert_list['signature'] = pq_algorithm_id
     
@@ -357,11 +361,12 @@ def replace_cms_signature(
         signer_info['signature'] = core.OctetString(new_signature)
         
         # Update digest algorithm identifier with PQ OID
+        # CMS uses DigestAlgorithmId which wraps the OID
         if oid_to_use:
-            signer_info['digest_algorithm'] = {
-                'algorithm': core.ObjectIdentifier(oid_to_use),
+            signer_info['digest_algorithm'] = algos.DigestAlgorithm({
+                'algorithm': algos.DigestAlgorithmId(oid_to_use),
                 'parameters': core.Null()
-            }
+            })
     
     # Update EE certificate with PQ public key if certificates exist
     # Note: Full certificate creation is complex - this updates existing structure
