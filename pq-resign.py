@@ -206,6 +206,7 @@ for name, alg_config in available_algos.items():
         if progress_state:
             print(f"  Previous progress: {progress_state['processed_count']:,} processed, "
                   f"{progress_state.get('failed_count', 0):,} failed")
+        print(f"  Note: Checking each file and skipping if output already exists")
         print()
     
     # Initialize signer
@@ -272,6 +273,9 @@ for name, alg_config in available_algos.items():
             # Do not include skipped files in size totals - only count files processed in this run
             if output_file.exists():
                 skipped_count += 1
+                # Update progress bar to show skipped count
+                if pbar is not None:
+                    pbar.update(1)  # Advance progress bar for skipped file
                 continue
             
             # Process file with error handling
@@ -289,7 +293,28 @@ for name, alg_config in available_algos.items():
                         # Generate unique keypair per file for scientific accuracy
                         # This represents real-world scenario where each object has its own keypair
                         # OQS generate_keypair() returns (public_key, private_key) tuple
-                        file_public_key, _ = signer.generate_keypair()
+                        # Handle potential version differences in return format
+                        try:
+                            keypair_result = signer.generate_keypair()
+                            # Try to unpack as tuple first (standard OQS behavior)
+                            if isinstance(keypair_result, tuple) and len(keypair_result) >= 2:
+                                file_public_key = keypair_result[0]  # First element is public key
+                            elif isinstance(keypair_result, tuple):
+                                # Tuple with only one element - take it
+                                file_public_key = keypair_result[0]
+                            else:
+                                # Not a tuple - assume it's the public key directly
+                                file_public_key = keypair_result
+                        except ValueError as unpack_error:
+                            # If unpacking fails, try to get just the public key
+                            # This handles cases where generate_keypair() returns something unexpected
+                            keypair_result = signer.generate_keypair()
+                            if isinstance(keypair_result, (bytes, bytearray)):
+                                file_public_key = keypair_result
+                            elif hasattr(keypair_result, '__getitem__'):
+                                file_public_key = keypair_result[0]
+                            else:
+                                raise ValueError(f"Unexpected generate_keypair() return type: {type(keypair_result)}")
                         
                         # Extract the "To Be Signed" portion (the part that should be signed)
                         object_type = detect_rpki_object_type(data, str(f))
