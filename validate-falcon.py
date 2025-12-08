@@ -135,8 +135,8 @@ def main():
             obj_type = detect_rpki_object_type(file_data, str(file_path))
             type_metrics[obj_type]["count"] += 1
             
-            # Extract signature and TBS
-            signature, tbs_data = extract_signature_and_tbs(file_data, obj_type)
+            # Extract signature and TBS (returns tbs_data, signature_bytes)
+            tbs_data, signature = extract_signature_and_tbs(file_data, obj_type)
             
             if signature is None or tbs_data is None:
                 metrics["extraction_failed"] += 1
@@ -167,6 +167,27 @@ def main():
                         f"(got {len(ee_pubkey) if ee_pubkey else 0} bytes, expected {FALCON_CONFIG['public_key_size']})"
                     )
                     continue
+                
+                # DEBUG: Test verification on first ROA file to see what's wrong
+                debug_printed = getattr(main, '_debug_printed', False)
+                if not debug_printed and obj_type == "roa":
+                    main._debug_printed = True
+                    print(f"\n=== DEBUG: First ROA file ===")
+                    print(f"File: {file_path.name}")
+                    print(f"Signature size: {len(signature)} bytes (expected: {FALCON_CONFIG['signature_size']})")
+                    print(f"TBS size: {len(tbs_data)} bytes")
+                    print(f"Public key size: {len(ee_pubkey)} bytes")
+                    print(f"Public key first 32 bytes: {ee_pubkey[:32].hex()}")
+                    print(f"Public key last 32 bytes: {ee_pubkey[-32:].hex()}")
+                    print(f"Signature first 32 bytes: {signature[:32].hex() if len(signature) >= 32 else signature.hex()}")
+                    print(f"TBS first 32 bytes: {tbs_data[:32].hex() if len(tbs_data) >= 32 else tbs_data.hex()}")
+                    # Try verification manually
+                    try:
+                        test_result = verifier.verify(tbs_data, signature, ee_pubkey)
+                        print(f"Direct verification result: {test_result}")
+                    except Exception as verr:
+                        print(f"Direct verification error: {verr}")
+                    print(f"=== END DEBUG ===\n")
                 
                 metrics["public_key_sizes"].append(len(ee_pubkey))
                 
