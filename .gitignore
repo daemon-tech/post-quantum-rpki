@@ -26,6 +26,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.ipynb_checkpoints
 
 # === GIT SYSTEM FILES ===
 .gitattributes
