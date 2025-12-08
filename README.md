@@ -50,7 +50,7 @@ Key Findings
 
 ![Key Findings](/img/key_findings.png)
 
-**Falcon-512 is the viable so far.**
+**Falcon-512 is viable so far.**
 
 Full results: [RESULTS.md](/results/RESULTS.md)  
 
