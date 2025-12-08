@@ -873,31 +873,45 @@ for repo in sorted(repos.iterdir()):
                                         all_public_key_sizes.append(ee_pubkey_size)
                                         type_metrics['pubkey_sizes'].append(ee_pubkey_size)
                                         
-                                        # Verify both CMS and EE cert signatures
-                                        cms_valid, ee_cert_valid, error_msg = verify_cms_object_signatures(
-                                            signed_data,
-                                            ee_pubkey,  # CMS signature uses EE cert's public key
-                                            None,  # Issuer key not available
-                                            algo_name,
-                                            verifier,
-                                            metrics
-                                        )
-                                        
-                                        if cms_valid:
-                                            type_metrics['cms_valid'] += 1
-                                        if ee_cert_valid:
-                                            type_metrics['ee_cert_valid'] += 1
-                                        if cms_valid and ee_cert_valid:
-                                            type_metrics['both_valid'] += 1
-                                        
-                                        # Use CMS verification result as primary
-                                        is_valid = cms_valid
+                                        # Validate public key size before verification
+                                        if ee_pubkey_size != expected_pubkey_size:
+                                            # Public key extraction failed - cannot verify
+                                            cms_valid = False
+                                            ee_cert_valid = False
+                                            error_msg = f"Public key extraction failed: got {ee_pubkey_size} bytes, expected {expected_pubkey_size} bytes"
+                                            error_categories['public_key_extraction_failed'] += 1
+                                            error_details.append(f"{f.name}: {error_msg}")
+                                            is_valid = False
+                                        else:
+                                            # Verify both CMS and EE cert signatures
+                                            cms_valid, ee_cert_valid, error_msg = verify_cms_object_signatures(
+                                                signed_data,
+                                                ee_pubkey,  # CMS signature uses EE cert's public key
+                                                None,  # Issuer key not available
+                                                algo_name,
+                                                verifier,
+                                                metrics
+                                            )
+                                            
+                                            if cms_valid:
+                                                type_metrics['cms_valid'] += 1
+                                            if ee_cert_valid:
+                                                type_metrics['ee_cert_valid'] += 1
+                                            if cms_valid and ee_cert_valid:
+                                                type_metrics['both_valid'] += 1
+                                            
+                                            # Use CMS verification result as primary
+                                            is_valid = cms_valid
+                                            
+                                            # If verification failed, record the error message
+                                            if not is_valid and error_msg:
+                                                error_details.append(f"{f.name}: {error_msg}")
                                     except Exception as ee_err:
                                         # EE cert extraction/verification failed, fall back to basic verification
                                         error_categories['ee_cert_extraction_error'] += 1
                                         error_details.append(f"{f.name}: EE cert error: {ee_err}")
                                         if public_key:
-                            is_valid = verifier.verify(tbs_data, signature, public_key)
+                                            is_valid = verifier.verify(tbs_data, signature, public_key)
                                         else:
                                             # No fallback key available, mark as failed
                                             is_valid = False
@@ -1149,6 +1163,14 @@ for repo in sorted(repos.iterdir()):
                     for error_type, count in sorted(error_categories.items(), key=lambda x: x[1], reverse=True):
                         print(f"      {error_type}: {count}")
                 
+                # Show sample error messages for debugging
+                if error_details:
+                    print(f"\n    Sample Error Messages (first 5):")
+                    for i, error_msg in enumerate(error_details[:5], 1):
+                        print(f"      {i}. {error_msg}")
+                    if len(error_details) > 5:
+                        print(f"      ... and {len(error_details) - 5} more errors")
+                
                 # Show percentiles
                 print(f"\n    Percentiles (P25/P50/P75/P95/P99):")
                 print(f"      Verification time: {p25_verify_time*1000:.2f}/{p50_verify_time*1000:.2f}/{p75_verify_time*1000:.2f}/{p95_verify_time*1000:.2f}/{p99_verify_time*1000:.2f} ms")
@@ -1160,7 +1182,11 @@ for repo in sorted(repos.iterdir()):
                 print(f"\n    Detailed Metrics Summary:")
                 print(f"      EE Certificates: {metrics_summary['ee_certificate']['extracted']} extracted, {metrics_summary['ee_certificate']['extraction_failed']} failed")
                 print(f"      CMS Signatures: {metrics_summary['cms_signature_verification']['valid']} valid, {metrics_summary['cms_signature_verification']['invalid']} invalid")
+                if metrics_summary['cms_signature_verification']['errors']:
+                    print(f"      CMS Verification Errors: {dict(list(metrics_summary['cms_signature_verification']['errors'].items())[:5])}")
                 print(f"      EE Cert Signatures: {metrics_summary['ee_certificate']['signatures_valid']} valid, {metrics_summary['ee_certificate']['signatures_invalid']} invalid")
+                if metrics_summary['ee_certificate']['verification_errors']:
+                    print(f"      EE Cert Verification Errors: {dict(list(metrics_summary['ee_certificate']['verification_errors'].items())[:5])}")
                 print(f"      Overall: {metrics_summary['overall_verification']['fully_valid']} fully valid, {metrics_summary['overall_verification']['partially_valid']} partially valid")
                 
                 # Use estimated time for validation time
