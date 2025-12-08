@@ -322,14 +322,52 @@ def scan_file(file_path, algo_info, verifier, sample_num):
                 if pubkey and len(pubkey) == algo_info['public_key']:
                     extraction_method = "extract_bytes_from_bitstring"
                 
-                # Method 2: Try .contents directly
+                # Method 2: Try .contents directly - might be ASN.1 INTEGER structure
                 if not pubkey or len(pubkey) != algo_info['public_key']:
                     try:
                         if hasattr(pubkey_bitstring, 'contents'):
                             contents = pubkey_bitstring.contents
                             if isinstance(contents, (bytes, bytearray)):
                                 contents_bytes = bytes(contents)
-                                if len(contents_bytes) >= algo_info['public_key']:
+                                
+                                # Check if it's an ASN.1 INTEGER structure
+                                # INTEGER format: [0x02 tag][length][data]
+                                if len(contents_bytes) >= 3 and contents_bytes[0] == 0x02:
+                                    # Parse INTEGER
+                                    idx = 1
+                                    len_byte = contents_bytes[idx]
+                                    idx += 1
+                                    
+                                    if (len_byte & 0x80) == 0:
+                                        int_length = len_byte
+                                    else:
+                                        len_bytes = len_byte & 0x7F
+                                        if 0 < len_bytes <= 4 and idx + len_bytes <= len(contents_bytes):
+                                            length_bytes = contents_bytes[idx:idx+len_bytes]
+                                            int_length = int.from_bytes(length_bytes, 'big')
+                                            idx += len_bytes
+                                        else:
+                                            int_length = 0
+                                    
+                                    # Extract integer data (this should be the public key)
+                                    if idx + int_length <= len(contents_bytes):
+                                        int_data = contents_bytes[idx:idx+int_length]
+                                        
+                                        # INTEGER might have leading zero padding - remove it
+                                        if int_data[0] == 0x00 and len(int_data) > algo_info['public_key']:
+                                            int_data = int_data[1:]
+                                        
+                                        if len(int_data) == algo_info['public_key']:
+                                            pubkey = int_data
+                                            extraction_method = "ASN.1 INTEGER from BitString.contents"
+                                        elif len(int_data) > algo_info['public_key']:
+                                            # Take from end (most likely)
+                                            pubkey = int_data[-algo_info['public_key']:]
+                                            if len(pubkey) == algo_info['public_key']:
+                                                extraction_method = "ASN.1 INTEGER from BitString.contents (from end)"
+                                
+                                # If not INTEGER structure, try direct extraction
+                                if (not pubkey or len(pubkey) != algo_info['public_key']) and len(contents_bytes) >= algo_info['public_key']:
                                     # Try from end (most likely)
                                     pubkey = contents_bytes[-algo_info['public_key']:]
                                     if len(pubkey) == algo_info['public_key']:
@@ -338,7 +376,7 @@ def scan_file(file_path, algo_info, verifier, sample_num):
                                     elif len(contents_bytes) == algo_info['public_key']:
                                         pubkey = contents_bytes
                                         extraction_method = "BitString.contents (exact)"
-                    except:
+                    except Exception as contents_err:
                         pass
                 
                 # Method 3: Parse BitString dump manually
@@ -379,25 +417,64 @@ def scan_file(file_path, algo_info, verifier, sample_num):
                     except Exception as parse_err:
                         pass
                 
-                # Method 4: Search in pubkey_info_dump
+                # Method 4: Search in entire certificate for 1312-byte sequence
+                # The public key might be stored elsewhere in the certificate
                 if not pubkey or len(pubkey) != algo_info['public_key']:
                     try:
-                        pubkey_info_dump = pubkey_info.dump()
-                        if len(pubkey_info_dump) >= algo_info['public_key']:
-                            # Search for the key (should be near the end)
-                            for search_idx in range(len(pubkey_info_dump) - algo_info['public_key'], 
-                                                   max(0, len(pubkey_info_dump) - algo_info['public_key'] - 100), -1):
-                                candidate = pubkey_info_dump[search_idx:search_idx+algo_info['public_key']]
-                                if len(candidate) == algo_info['public_key']:
-                                    # Check if it looks like a key (high entropy)
-                                    zero_count = candidate.count(0)
-                                    unique_bytes = len(set(candidate))
-                                    if zero_count < algo_info['public_key'] * 0.3 and unique_bytes > algo_info['public_key'] * 0.15:
-                                        pubkey = bytes(candidate)
-                                        extraction_method = "heuristic search in SubjectPublicKeyInfo dump"
-                                        break
-                    except:
-                        pass
+                        # Search the entire certificate dump
+                        cert_dump = cert.dump()
+                        print(f"  Searching entire certificate dump ({len(cert_dump):,} bytes) for {algo_info['public_key']}-byte key...")
+                        
+                        best_candidate = None
+                        best_score = 0
+                        
+                        # Search backwards from end (keys are usually near the end)
+                        for search_idx in range(len(cert_dump) - algo_info['public_key'], 
+                                               max(0, len(cert_dump) - algo_info['public_key'] - 2000), -1):
+                            candidate = cert_dump[search_idx:search_idx+algo_info['public_key']]
+                            if len(candidate) == algo_info['public_key']:
+                                # Check if it looks like a key (high entropy, not too many zeros)
+                                zero_count = candidate.count(0)
+                                unique_bytes = len(set(candidate))
+                                # Good key characteristics: < 30% zeros, > 15% unique bytes
+                                if zero_count < algo_info['public_key'] * 0.3 and unique_bytes > algo_info['public_key'] * 0.15:
+                                    score = unique_bytes - (zero_count * 0.5)
+                                    if score > best_score:
+                                        best_score = score
+                                        best_candidate = candidate
+                        
+                        if best_candidate is not None and best_score > algo_info['public_key'] * 0.1:
+                            pubkey = bytes(best_candidate)
+                            extraction_method = f"heuristic search in certificate dump (score: {best_score:.1f})"
+                            print(f"  Found candidate at offset {len(cert_dump) - len(best_candidate) - cert_dump.rindex(bytes(best_candidate)):,} from end")
+                    except Exception as search_err:
+                        print(f"  Search error: {search_err}")
+                
+                # Method 5: Search in raw certificate bytes
+                if not pubkey or len(pubkey) != algo_info['public_key']:
+                    try:
+                        print(f"  Searching raw certificate bytes ({len(signed_data):,} bytes)...")
+                        best_candidate = None
+                        best_score = 0
+                        
+                        for search_idx in range(len(signed_data) - algo_info['public_key'], 
+                                               max(0, len(signed_data) - algo_info['public_key'] - 2000), -1):
+                            candidate = signed_data[search_idx:search_idx+algo_info['public_key']]
+                            if len(candidate) == algo_info['public_key']:
+                                zero_count = candidate.count(0)
+                                unique_bytes = len(set(candidate))
+                                if zero_count < algo_info['public_key'] * 0.3 and unique_bytes > algo_info['public_key'] * 0.15:
+                                    score = unique_bytes - (zero_count * 0.5)
+                                    if score > best_score:
+                                        best_score = score
+                                        best_candidate = candidate
+                        
+                        if best_candidate is not None and best_score > algo_info['public_key'] * 0.1:
+                            pubkey = bytes(best_candidate)
+                            extraction_method = f"heuristic search in raw certificate bytes (score: {best_score:.1f})"
+                            print(f"  Found candidate at offset {len(signed_data) - len(best_candidate) - signed_data.rindex(bytes(best_candidate)):,} from end")
+                    except Exception as search_err:
+                        print(f"  Raw bytes search error: {search_err}")
                 
                 if pubkey and len(pubkey) == algo_info['public_key']:
                     print(f"\n  ✅ Public key extracted: {len(pubkey):,} bytes (expected: {algo_info['public_key']})")

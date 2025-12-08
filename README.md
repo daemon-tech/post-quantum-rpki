@@ -50,7 +50,7 @@ Key Findings
 
 ![Key Findings](/img/key_findings.png)
 
-**Falcon-512 is the only viable path forward so far.**
+**Falcon-512 is the viable so far.**
 
 Full results: [RESULTS.md](/results/RESULTS.md)  
 

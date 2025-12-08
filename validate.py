@@ -631,6 +631,48 @@ for repo in sorted(repos.iterdir()):
                                         
                                         pubkey_bitstring = ee_pubkey_info['public_key']
                                         
+                                        # METHOD 0: Try parsing BitString.contents as ASN.1 INTEGER
+                                        # Post-quantum keys are often stored as INTEGER structures inside BitString
+                                        if ee_pubkey is None and hasattr(pubkey_bitstring, 'contents'):
+                                            try:
+                                                contents = pubkey_bitstring.contents
+                                                if isinstance(contents, (bytes, bytearray)):
+                                                    contents_bytes = bytes(contents)
+                                                    
+                                                    # Check if it's an ASN.1 INTEGER structure
+                                                    # INTEGER format: [0x02 tag][length][data]
+                                                    if len(contents_bytes) >= 3 and contents_bytes[0] == 0x02:
+                                                        idx = 1
+                                                        len_byte = contents_bytes[idx]
+                                                        idx += 1
+                                                        
+                                                        if (len_byte & 0x80) == 0:
+                                                            int_length = len_byte
+                                                        else:
+                                                            len_bytes = len_byte & 0x7F
+                                                            if 0 < len_bytes <= 4 and idx + len_bytes <= len(contents_bytes):
+                                                                length_bytes = contents_bytes[idx:idx+len_bytes]
+                                                                int_length = int.from_bytes(length_bytes, 'big')
+                                                                idx += len_bytes
+                                                            else:
+                                                                int_length = 0
+                                                        
+                                                        # Extract integer data (this should be the public key)
+                                                        if idx + int_length <= len(contents_bytes):
+                                                            int_data = contents_bytes[idx:idx+int_length]
+                                                            
+                                                            # INTEGER might have leading zero padding - remove it
+                                                            while len(int_data) > expected_pubkey_size and int_data[0] == 0x00:
+                                                                int_data = int_data[1:]
+                                                            
+                                                            if len(int_data) == expected_pubkey_size:
+                                                                ee_pubkey = int_data
+                                                            elif len(int_data) > expected_pubkey_size:
+                                                                # Take from end (most likely)
+                                                                ee_pubkey = int_data[-expected_pubkey_size:]
+                                            except:
+                                                pass
+                                        
                                         # CRITICAL INSIGHT: SubjectPublicKeyInfo is only 294 bytes, but we need 1312!
                                         # The key MUST be stored elsewhere or in a different format.
                                         # Let's search the entire certificate for a 1312-byte sequence that looks like a key.
