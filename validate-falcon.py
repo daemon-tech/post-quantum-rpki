@@ -70,9 +70,11 @@ def main():
     falcon_dir = repos / FALCON_CONFIG["directory_name"]
     
     if not falcon_dir.exists():
-        print(f"ERROR: Falcon-512 directory not found: {falcon_dir}")
-        print(f"Expected path: {falcon_dir}")
-        sys.exit(1)
+        print(f"Falcon-512 directory not found: {falcon_dir}")
+        print(f"Creating directory: {falcon_dir}")
+        falcon_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Directory created successfully")
+        print()
     
     print(f"Scanning directory: {falcon_dir}")
     
@@ -82,8 +84,12 @@ def main():
         files.extend(list(falcon_dir.rglob(ext)))
     
     if not files:
-        print(f"ERROR: No RPKI files found in {falcon_dir}")
-        sys.exit(1)
+        print(f"WARNING: No RPKI files found in {falcon_dir}")
+        print(f"  This directory is empty. You need to run the resigning script first:")
+        print(f"  python3 pq-resign-falcon.py")
+        print()
+        print(f"  The resigning script will populate this directory with re-signed RPKI objects.")
+        sys.exit(0)  # Exit gracefully, not as an error
     
     print(f"Found {len(files)} files")
     print()
@@ -174,17 +180,50 @@ def main():
                     main._debug_printed = True
                     print(f"\n=== DEBUG: First ROA file ===")
                     print(f"File: {file_path.name}")
+                    print(f"File size: {len(file_data)} bytes")
                     print(f"Signature size: {len(signature)} bytes (expected: {FALCON_CONFIG['signature_size']})")
                     print(f"TBS size: {len(tbs_data)} bytes")
+                    print(f"EE cert size: {len(ee_cert_bytes)} bytes")
                     print(f"Public key size: {len(ee_pubkey)} bytes")
                     print(f"Public key first 32 bytes: {ee_pubkey[:32].hex()}")
                     print(f"Public key last 32 bytes: {ee_pubkey[-32:].hex()}")
                     print(f"Signature first 32 bytes: {signature[:32].hex() if len(signature) >= 32 else signature.hex()}")
                     print(f"TBS first 32 bytes: {tbs_data[:32].hex() if len(tbs_data) >= 32 else tbs_data.hex()}")
+                    
+                    # CRITICAL: Check if the certificate has the PQ algorithm OID
+                    try:
+                        from asn1crypto import cms, x509, algos
+                        cert_parsed = x509.Certificate.load(ee_cert_bytes)
+                        
+                        # Check signature algorithm
+                        sig_alg = cert_parsed['signature_algorithm']
+                        sig_alg_oid = sig_alg['algorithm'].dotted
+                        print(f"\nCertificate analysis:")
+                        print(f"  Signature algorithm OID: {sig_alg_oid}")
+                        print(f"  Expected (Falcon-512): 1.3.9999.3.6.4")
+                        
+                        # Check public key algorithm
+                        pubkey_alg = cert_parsed['tbs_certificate']['subject_public_key_info']['algorithm']
+                        pubkey_alg_oid = pubkey_alg['algorithm'].dotted
+                        print(f"  Public key algorithm OID: {pubkey_alg_oid}")
+                        
+                        # Check if this matches
+                        if sig_alg_oid != "1.3.9999.3.6.4" or pubkey_alg_oid != "1.3.9999.3.6.4":
+                            print(f"  ⚠ WARNING: Certificate does NOT have Falcon-512 OID!")
+                            print(f"  This might be an OLD certificate, not the re-signed one!")
+                        
+                        # Check signature size in certificate
+                        cert_sig = cert_parsed['signature_value']
+                        if hasattr(cert_sig, 'contents'):
+                            cert_sig_size = len(cert_sig.contents)
+                            print(f"  Certificate signature size: {cert_sig_size} bytes")
+                    except Exception as cert_analysis_err:
+                        print(f"Certificate analysis error: {cert_analysis_err}")
+                    
                     # Try verification manually
                     try:
                         test_result = verifier.verify(tbs_data, signature, ee_pubkey)
-                        print(f"Direct verification result: {test_result}")
+                        print(f"\nDirect verification result: {test_result}")
                     except Exception as verr:
                         print(f"Direct verification error: {verr}")
                     print(f"=== END DEBUG ===\n")

@@ -348,6 +348,26 @@ for name, alg_config in available_algos.items():
                         
                         # Extract the "To Be Signed" portion (the part that should be signed)
                         object_type = detect_rpki_object_type(data, str(f))
+                        
+                        # CRITICAL FIX: For CMS objects, we need to update digest_algorithm FIRST
+                        # before extracting TBS, otherwise we sign old signedAttrs but verify new ones
+                        if object_type in ('roa', 'manifest'):
+                            from asn1crypto import cms, algos, core
+                            from asn1_rpki import PQ_ALGORITHM_OIDS
+                            cms_obj = cms.ContentInfo.load(data)
+                            signed_data = cms_obj['content']
+                            if len(signed_data['signer_infos']) > 0:
+                                signer_info = signed_data['signer_infos'][0]
+                                # Update digest_algorithm BEFORE extracting TBS
+                                oid_to_use = PQ_ALGORITHM_OIDS.get(alg_config)
+                                if oid_to_use and 'signed_attrs' in signer_info and signer_info['signed_attrs']:
+                                    signer_info['digest_algorithm'] = algos.DigestAlgorithm({
+                                        'algorithm': algos.DigestAlgorithmId(oid_to_use),
+                                        'parameters': core.Null()
+                                    })
+                                    # Re-encode to get updated signedAttrs
+                                    data = cms_obj.dump()
+                        
                         tbs_data = extract_tbs_for_signing(data, object_type, str(f))
                         
                         # Sign the TBS portion (not the whole file including old signature!)
