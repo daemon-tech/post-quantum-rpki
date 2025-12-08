@@ -392,8 +392,35 @@ def extract_signature_and_tbs(data: bytes, object_type: str = None, file_path: s
             
             # Extract signature from signerInfo
             signature_obj = signer_info['signature']
-            # OctetString.contents is already bytes
-            signature_bytes = signature_obj.contents if hasattr(signature_obj, 'contents') else bytes(signature_obj)
+            # For OctetString, always use dump() to get full signature
+            # .contents might be truncated or encoded
+            try:
+                sig_dump = signature_obj.dump()
+                # OctetString dump: [0x04][length][data]
+                if len(sig_dump) >= 3 and sig_dump[0] == 0x04:
+                    idx = 1
+                    len_byte = sig_dump[idx]
+                    idx += 1
+                    if (len_byte & 0x80) == 0:
+                        sig_length = len_byte
+                    else:
+                        len_bytes = len_byte & 0x7F
+                        if 0 < len_bytes <= 4 and idx + len_bytes <= len(sig_dump):
+                            sig_length = int.from_bytes(sig_dump[idx:idx+len_bytes], 'big')
+                            idx += len_bytes
+                        else:
+                            sig_length = 0
+                    if idx + sig_length <= len(sig_dump):
+                        signature_bytes = sig_dump[idx:idx+sig_length]
+                    else:
+                        # Fallback to contents if dump parsing fails
+                        signature_bytes = signature_obj.contents if hasattr(signature_obj, 'contents') else bytes(signature_obj)
+                else:
+                    # Not a standard OctetString, try contents
+                    signature_bytes = signature_obj.contents if hasattr(signature_obj, 'contents') else bytes(signature_obj)
+            except:
+                # Fallback to contents
+                signature_bytes = signature_obj.contents if hasattr(signature_obj, 'contents') else bytes(signature_obj)
             return tbs_data, signature_bytes
         elif object_type == 'crl':
             crl_obj = crl.CertificateList.load(data)
@@ -949,7 +976,42 @@ def extract_public_key_from_certificate(cert_bytes: bytes, expected_size: int) -
         pubkey_info = cert['tbs_certificate']['subject_public_key_info']
         pubkey_bitstring = pubkey_info['public_key']
         
-        # Method 1: Try to get raw bytes from _bytes attribute (most direct)
+        # Method 0: Iterate BitString bits and convert to bytes (MOST RELIABLE)
+        # The key was stored using bytes_to_bitstring_tuple(), so we need to iterate bits
+        try:
+            required_bits = expected_size * 8
+            bits = []
+            bit_count = 0
+            
+            # Try to iterate bits
+            try:
+                for bit in pubkey_bitstring:
+                    bits.append(int(bit))
+                    bit_count += 1
+                    if bit_count >= required_bits:
+                        break
+            except (TypeError, AttributeError, StopIteration):
+                # If iteration fails, try accessing internal bit representation
+                if hasattr(pubkey_bitstring, '_bits') or hasattr(pubkey_bitstring, 'bits'):
+                    bits_attr = getattr(pubkey_bitstring, '_bits', None) or getattr(pubkey_bitstring, 'bits', None)
+                    if isinstance(bits_attr, (list, tuple)):
+                        bits = [int(b) for b in bits_attr[:required_bits]]
+            
+            # Convert bits to bytes (8 bits per byte, MSB first)
+            if len(bits) >= required_bits:
+                byte_list = []
+                for i in range(0, required_bits, 8):
+                    byte_bits = bits[i:i+8]
+                    if len(byte_bits) == 8:
+                        byte_val = sum(int(b) << (7 - j) for j, b in enumerate(byte_bits))
+                        byte_list.append(byte_val)
+                
+                if len(byte_list) == expected_size:
+                    return bytes(byte_list)
+        except Exception as bit_err:
+            pass  # Bit iteration failed, try other methods
+        
+        # Method 1: Try to get raw bytes from _bytes attribute
         if hasattr(pubkey_bitstring, '_bytes'):
             raw_bytes = pubkey_bitstring._bytes
             if isinstance(raw_bytes, bytes) and len(raw_bytes) >= expected_size:
@@ -1027,7 +1089,7 @@ def extract_public_key_from_certificate(cert_bytes: bytes, expected_size: int) -
                     if len(candidate) == expected_size:
                         return candidate
         
-        # Method 4: Search certificate dump for high-entropy 1312-byte sequence
+        # Method 4: Search certificate dump for high-entropy sequence
         cert_dump = cert.dump()
         best_candidate = None
         best_score = 0
@@ -1057,6 +1119,52 @@ def extract_public_key_from_certificate(cert_bytes: bytes, expected_size: int) -
         
         if best_candidate and best_score > expected_size * 0.15:
             return bytes(best_candidate)
+        
+        # Method 5: Search raw certificate bytes in SubjectPublicKeyInfo area ONLY
+        # Find the OID and BitString in raw bytes, then extract key from BitString
+        try:
+            # Find the algorithm OID in raw bytes
+            # For Falcon-512, we'd need to find the OID, but let's search for BitString tag (0x03) near SubjectPublicKeyInfo
+            # Actually, let's search the TBS certificate area for the BitString containing the key
+            tbs_dump = cert['tbs_certificate'].dump()
+            pubkey_info_dump = pubkey_info.dump()
+            
+            # Find SubjectPublicKeyInfo in raw certificate bytes
+            pubkey_info_start = cert_bytes.find(pubkey_info_dump[:100])
+            if pubkey_info_start >= 0:
+                # Search in a limited area around SubjectPublicKeyInfo (not entire cert)
+                search_start = max(0, pubkey_info_start - 200)
+                search_end = min(len(cert_bytes), pubkey_info_start + len(pubkey_info_dump) + 500)
+                
+                best_candidate = None
+                best_score = 0
+                
+                for search_idx in range(search_end - expected_size, search_start, -1):
+                    if search_idx + expected_size > len(cert_bytes):
+                        continue
+                    candidate = cert_bytes[search_idx:search_idx+expected_size]
+                    if len(candidate) == expected_size:
+                        # Skip if it looks like a filename (contains printable ASCII strings)
+                        try:
+                            text_part = candidate[:50].decode('ascii', errors='ignore')
+                            printable_count = sum(1 for c in text_part if c.isprintable() and c.isalnum())
+                            if printable_count > 20:  # Too many alphanumeric = likely text
+                                continue
+                        except:
+                            pass
+                        
+                        zero_count = candidate.count(0)
+                        unique_bytes = len(set(candidate))
+                        if zero_count < expected_size * 0.3 and unique_bytes > expected_size * 0.15:
+                            score = unique_bytes - (zero_count * 0.5)
+                            if score > best_score:
+                                best_score = score
+                                best_candidate = candidate
+                
+                if best_candidate and best_score > expected_size * 0.15:
+                    return bytes(best_candidate)
+        except:
+            pass
         
         return None
     except Exception:
@@ -1133,8 +1241,34 @@ def verify_cms_object_signatures(
             else:
                 cms_tbs = signed_data['encap_content_info']['encap_content'].contents
             
-            # Extract CMS signature
-            cms_signature = signer_info['signature'].contents if hasattr(signer_info['signature'], 'contents') else bytes(signer_info['signature'])
+            # Extract CMS signature (use improved extraction method)
+            signature_obj = signer_info['signature']
+            if hasattr(signature_obj, 'contents'):
+                cms_signature = signature_obj.contents
+                # If contents is too small, try dump() and extract from it
+                if len(cms_signature) < 500:  # Suspiciously small for PQ signature
+                    try:
+                        sig_dump = signature_obj.dump()
+                        # OctetString dump: [0x04][length][data]
+                        if len(sig_dump) >= 3 and sig_dump[0] == 0x04:
+                            idx = 1
+                            len_byte = sig_dump[idx]
+                            idx += 1
+                            if (len_byte & 0x80) == 0:
+                                sig_length = len_byte
+                            else:
+                                len_bytes = len_byte & 0x7F
+                                if 0 < len_bytes <= 4 and idx + len_bytes <= len(sig_dump):
+                                    sig_length = int.from_bytes(sig_dump[idx:idx+len_bytes], 'big')
+                                    idx += len_bytes
+                                else:
+                                    sig_length = 0
+                            if idx + sig_length <= len(sig_dump):
+                                cms_signature = sig_dump[idx:idx+sig_length]
+                    except:
+                        pass
+            else:
+                cms_signature = bytes(signature_obj)
             
             # Perform actual verification if verifier is provided
             if verifier is not None and cms_public_key:
