@@ -71,6 +71,8 @@ try:
         verify_cms_object_signatures,
         extract_ee_certificate_from_cms,
         extract_issuer_certificate_from_cms,
+        find_parent_certificate,
+        extract_public_key_from_certificate,
         get_verification_metrics,
         reset_verification_metrics,
         print_verification_metrics
@@ -465,10 +467,7 @@ for repo in sorted(repos.iterdir()):
                 'sig_sizes': [],
                 'pubkey_sizes': [],
                 'ee_certs_found': 0,
-                'issuer_certs_found': 0,
-                'cms_valid': 0,
-                'ee_cert_valid': 0,
-                'both_valid': 0
+                                'cms_valid': 0
             })
             
             # Size distribution data (for histograms/percentiles)
@@ -586,323 +585,11 @@ for repo in sorted(repos.iterdir()):
                                     type_metrics['ee_certs_found'] += 1
                                     metrics.record_ee_cert_extraction(True)
                                     
-                                    # Check for issuer cert
-                                    issuer_cert_bytes = extract_issuer_certificate_from_cms(signed_data)
-                                    if issuer_cert_bytes:
-                                        issuer_cert_found = True
-                                        type_metrics['issuer_certs_found'] += 1
+                                    # Skip issuer cert extraction (not needed)
                                     
-                                    # Extract public key from EE cert for verification
+                                    # Extract public key from EE cert using the new extraction function
                                     try:
-                                        from asn1crypto import x509, core
-                                        ee_cert = x509.Certificate.load(ee_cert_bytes)
-                                        ee_pubkey_info = ee_cert['tbs_certificate']['subject_public_key_info']
-                                        
-                                        # CRITICAL: SubjectPublicKeyInfo is only 294 bytes, but we need 1312!
-                                        # The key MUST be stored elsewhere in the certificate.
-                                        # Search the entire certificate dump for a 1312-byte sequence.
-                                        ee_pubkey = None
-                                        
-                                        # Method 1: Search certificate raw bytes for key pattern (HIGHEST PRIORITY)
-                                        try:
-                                            cert_dump = ee_cert.dump()
-                                            # Search backwards from end for a sequence that looks like a key
-                                            # Keys have high entropy: not too many zeros, reasonable byte distribution
-                                            best_candidate = None
-                                            best_score = 0
-                                            
-                                            for search_idx in range(len(cert_dump) - expected_pubkey_size, max(0, len(cert_dump) - expected_pubkey_size - 3000), -1):
-                                                candidate = cert_dump[search_idx:search_idx+expected_pubkey_size]
-                                                if len(candidate) == expected_pubkey_size:
-                                                    # Calculate entropy score
-                                                    zero_count = candidate.count(0)
-                                                    unique_bytes = len(set(candidate))
-                                                    # Good key characteristics: < 30% zeros, > 15% unique bytes
-                                                    if zero_count < expected_pubkey_size * 0.3 and unique_bytes > expected_pubkey_size * 0.15:
-                                                        score = unique_bytes - (zero_count * 0.5)
-                                                        if score > best_score:
-                                                            best_score = score
-                                                            best_candidate = candidate
-                                            
-                                            if best_candidate is not None and best_score > expected_pubkey_size * 0.1:
-                                                ee_pubkey = best_candidate
-                                        except:
-                                            pass
-                                        
-                                        pubkey_bitstring = ee_pubkey_info['public_key']
-                                        
-                                        # METHOD 0: Try parsing BitString.contents as ASN.1 INTEGER
-                                        # Post-quantum keys are often stored as INTEGER structures inside BitString
-                                        if ee_pubkey is None and hasattr(pubkey_bitstring, 'contents'):
-                                            try:
-                                                contents = pubkey_bitstring.contents
-                                                if isinstance(contents, (bytes, bytearray)):
-                                                    contents_bytes = bytes(contents)
-                                                    
-                                                    # Check if it's an ASN.1 INTEGER structure
-                                                    # INTEGER format: [0x02 tag][length][data]
-                                                    if len(contents_bytes) >= 3 and contents_bytes[0] == 0x02:
-                                                        idx = 1
-                                                        len_byte = contents_bytes[idx]
-                                                        idx += 1
-                                                        
-                                                        if (len_byte & 0x80) == 0:
-                                                            int_length = len_byte
-                                                        else:
-                                                            len_bytes = len_byte & 0x7F
-                                                            if 0 < len_bytes <= 4 and idx + len_bytes <= len(contents_bytes):
-                                                                length_bytes = contents_bytes[idx:idx+len_bytes]
-                                                                int_length = int.from_bytes(length_bytes, 'big')
-                                                                idx += len_bytes
-                                                            else:
-                                                                int_length = 0
-                                                        
-                                                        # Extract integer data (this should be the public key)
-                                                        if idx + int_length <= len(contents_bytes):
-                                                            int_data = contents_bytes[idx:idx+int_length]
-                                                            
-                                                            # INTEGER might have leading zero padding - remove it
-                                                            while len(int_data) > expected_pubkey_size and int_data[0] == 0x00:
-                                                                int_data = int_data[1:]
-                                                            
-                                                            if len(int_data) == expected_pubkey_size:
-                                                                ee_pubkey = int_data
-                                                            elif len(int_data) > expected_pubkey_size:
-                                                                # Take from end (most likely)
-                                                                ee_pubkey = int_data[-expected_pubkey_size:]
-                                            except:
-                                                pass
-                                        
-                                        # CRITICAL INSIGHT: SubjectPublicKeyInfo is only 294 bytes, but we need 1312!
-                                        # The key MUST be stored elsewhere or in a different format.
-                                        # Let's search the entire certificate for a 1312-byte sequence that looks like a key.
-                                        
-                                        # Method 1: Search RAW certificate bytes (not parsed dump) for key pattern
-                                        # The key should be in the original certificate bytes
-                                        try:
-                                            # Search the raw certificate bytes directly
-                                            # Keys have high entropy: not too many zeros, reasonable byte distribution
-                                            best_candidate = None
-                                            best_score = 0
-                                            
-                                            for search_idx in range(len(ee_cert_bytes) - expected_pubkey_size, max(0, len(ee_cert_bytes) - expected_pubkey_size - 3000), -1):
-                                                candidate = ee_cert_bytes[search_idx:search_idx+expected_pubkey_size]
-                                                if len(candidate) == expected_pubkey_size:
-                                                    # Calculate entropy score
-                                                    zero_count = candidate.count(0)
-                                                    unique_bytes = len(set(candidate))
-                                                    # Good key: < 30% zeros, > 15% unique bytes
-                                                    if zero_count < expected_pubkey_size * 0.3 and unique_bytes > expected_pubkey_size * 0.15:
-                                                        score = unique_bytes - (zero_count * 0.5)
-                                                        if score > best_score:
-                                                            best_score = score
-                                                            best_candidate = candidate
-                                            
-                                            if best_candidate is not None and best_score > expected_pubkey_size * 0.1:
-                                                ee_pubkey = best_candidate
-                                        except:
-                                            pass
-                                        
-                                        # Method 1b: Also try parsed certificate dump
-                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
-                                            try:
-                                                cert_dump = ee_cert.dump()
-                                                best_candidate = None
-                                                best_score = 0
-                                                
-                                                for search_idx in range(len(cert_dump) - expected_pubkey_size, max(0, len(cert_dump) - expected_pubkey_size - 3000), -1):
-                                                    candidate = cert_dump[search_idx:search_idx+expected_pubkey_size]
-                                                    if len(candidate) == expected_pubkey_size:
-                                                        zero_count = candidate.count(0)
-                                                        unique_bytes = len(set(candidate))
-                                                        if zero_count < expected_pubkey_size * 0.3 and unique_bytes > expected_pubkey_size * 0.15:
-                                                            score = unique_bytes - (zero_count * 0.5)
-                                                            if score > best_score:
-                                                                best_score = score
-                                                                best_candidate = candidate
-                                                
-                                                if best_candidate is not None and best_score > expected_pubkey_size * 0.1:
-                                                    ee_pubkey = best_candidate
-                                            except:
-                                                pass
-                                        
-                                        # Method 2: Try BitString internal _bytes
-                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
-                                            try:
-                                                if hasattr(pubkey_bitstring, '_bytes'):
-                                                    internal_bytes = pubkey_bitstring._bytes
-                                                    if isinstance(internal_bytes, bytes) and len(internal_bytes) >= expected_pubkey_size:
-                                                        ee_pubkey = internal_bytes[-expected_pubkey_size:]
-                                            except:
-                                                pass
-                                        
-                                        # Method 3: Parse BitString dump
-                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
-                                            try:
-                                                bitstring_dump = pubkey_bitstring.dump()
-                                                if len(bitstring_dump) >= expected_pubkey_size + 5 and bitstring_dump[0] == 0x03:
-                                                    idx = 1
-                                                    if idx < len(bitstring_dump):
-                                                        len_byte = bitstring_dump[idx]
-                                                        idx += 1
-                                                        if (len_byte & 0x80) == 0:
-                                                            data_length = len_byte
-                                                        else:
-                                                            len_bytes = len_byte & 0x7F
-                                                            if 0 < len_bytes <= 4 and idx + len_bytes <= len(bitstring_dump):
-                                                                data_length = int.from_bytes(bitstring_dump[idx:idx+len_bytes], 'big')
-                                                                idx += len_bytes
-                                                            else:
-                                                                data_length = 0
-                                                        
-                                                        if idx < len(bitstring_dump):
-                                                            idx += 1  # Skip unused_bits
-                                                            if data_length >= expected_pubkey_size and idx + data_length <= len(bitstring_dump):
-                                                                ee_pubkey = bitstring_dump[idx + data_length - expected_pubkey_size:idx + data_length]
-                                            except:
-                                                pass
-                                        
-                                        # Method 4: Extract from SubjectPublicKeyInfo dump (unlikely to work, but try)
-                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
-                                            try:
-                                                pubkey_info_dump = ee_pubkey_info.dump()
-                                                if len(pubkey_info_dump) >= expected_pubkey_size:
-                                                    ee_pubkey = pubkey_info_dump[-expected_pubkey_size:]
-                                            except:
-                                                pass
-                                        
-                                        # DIAGNOSTIC: Inspect BitString structure (only if extraction failed)
-                                        if (ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size) and verified_count == 0:  # Only on first file
-                                            try:
-                                                print(f"\n=== BITSTRING DIAGNOSTIC (First file only) ===")
-                                                print(f"Expected size: {expected_pubkey_size} bytes")
-                                                print(f"BitString type: {type(pubkey_bitstring)}")
-                                                print(f"BitString repr: {repr(pubkey_bitstring)[:200]}")
-                                                
-                                                # Check dump
-                                                dump = pubkey_bitstring.dump()
-                                                print(f"BitString dump length: {len(dump)} bytes")
-                                                print(f"BitString dump first 50 bytes (hex): {dump[:50].hex()}")
-                                                print(f"BitString dump last 50 bytes (hex): {dump[-50:].hex() if len(dump) > 50 else dump.hex()}")
-                                                
-                                                # Check contents
-                                                if hasattr(pubkey_bitstring, 'contents'):
-                                                    contents = pubkey_bitstring.contents
-                                                    print(f"BitString.contents type: {type(contents)}")
-                                                    if isinstance(contents, (bytes, bytearray)):
-                                                        print(f"BitString.contents length: {len(contents)} bytes")
-                                                        print(f"BitString.contents first 50 bytes (hex): {contents[:50].hex() if len(contents) > 50 else contents.hex()}")
-                                                
-                                                # Check if iterable
-                                                try:
-                                                    bit_count = 0
-                                                    for bit in pubkey_bitstring:
-                                                        bit_count += 1
-                                                        if bit_count >= 100:
-                                                            break
-                                                    print(f"BitString is iterable, first 100 bits collected")
-                                                except:
-                                                    print(f"BitString is NOT iterable")
-                                                
-                                                # Check internal attributes
-                                                print(f"BitString dir (first 20): {[x for x in dir(pubkey_bitstring) if not x.startswith('__')][:20]}")
-                                                
-                                                # Check SubjectPublicKeyInfo dump
-                                                pubkey_info_dump = ee_pubkey_info.dump()
-                                                print(f"SubjectPublicKeyInfo dump length: {len(pubkey_info_dump)} bytes")
-                                                print(f"SubjectPublicKeyInfo dump first 100 bytes (hex): {pubkey_info_dump[:100].hex()}")
-                                                print(f"SubjectPublicKeyInfo dump last 100 bytes (hex): {pubkey_info_dump[-100:].hex() if len(pubkey_info_dump) > 100 else pubkey_info_dump.hex()}")
-                                                
-                                                print(f"=== END DIAGNOSTIC ===\n")
-                                            except Exception as diag_err:
-                                                print(f"Diagnostic error: {diag_err}")
-                                        
-                                        # METHOD 1: Extract from SubjectPublicKeyInfo dump
-                                        # The SubjectPublicKeyInfo contains: [algorithm OID][public_key BitString]
-                                        # The BitString data is at the end - extract it from the full structure
-                                        try:
-                                            pubkey_info_dump = ee_pubkey_info.dump()
-                                            # For a 1312-byte key, the BitString encoding is ~1315-1320 bytes
-                                            # Search backwards for BitString tag (0x03) and extract data
-                                            if len(pubkey_info_dump) >= expected_pubkey_size + 20:
-                                                # Look for BitString tag near the end
-                                                for search_idx in range(len(pubkey_info_dump) - expected_pubkey_size - 10, 
-                                                                       max(0, len(pubkey_info_dump) - expected_pubkey_size - 100), -1):
-                                                    if search_idx < len(pubkey_info_dump) and pubkey_info_dump[search_idx] == 0x03:
-                                                        # Found BitString tag, parse from here
-                                                        idx = search_idx + 1
-                                                        if idx < len(pubkey_info_dump):
-                                                            len_byte = pubkey_info_dump[idx]
-                                                            if (len_byte & 0x80) == 0:
-                                                                idx += 1
-                                                            else:
-                                                                len_bytes = len_byte & 0x7F
-                                                                idx += 1
-                                                                if len_bytes > 0 and idx + len_bytes <= len(pubkey_info_dump):
-                                                                    idx += len_bytes
-                                                            
-                                                            # Skip unused_bits
-                                                            if idx < len(pubkey_info_dump):
-                                                                idx += 1
-                                                                
-                                                                # Extract data
-                                                                if idx + expected_pubkey_size <= len(pubkey_info_dump):
-                                                                    ee_pubkey = pubkey_info_dump[idx:idx+expected_pubkey_size]
-                                                                    if len(ee_pubkey) == expected_pubkey_size:
-                                                                        break
-                                                                elif len(pubkey_info_dump) >= expected_pubkey_size:
-                                                                    ee_pubkey = pubkey_info_dump[-expected_pubkey_size:]
-                                                                    if len(ee_pubkey) == expected_pubkey_size:
-                                                                        break
-                                        except:
-                                            pass
-                                        
-                                        # METHOD 2: Use the extraction function
-                                        if ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size:
-                                            ee_pubkey = extract_bytes_from_bitstring(pubkey_bitstring, expected_pubkey_size)
-                                        
-                                        # METHOD 3: Try direct bit iteration if still failing
-                                        if (ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size) and expected_pubkey_size:
-                                            try:
-                                                required_bits = expected_pubkey_size * 8
-                                                bits = []
-                                                # Try to iterate all bits
-                                                bit_count = 0
-                                                for bit in pubkey_bitstring:
-                                                    bits.append(int(bit))
-                                                    bit_count += 1
-                                                    if bit_count >= required_bits:
-                                                        break
-                                                
-                                                # If we got enough bits, convert to bytes
-                                                if len(bits) >= required_bits:
-                                                    byte_list = []
-                                                    for i in range(0, required_bits, 8):
-                                                        byte_bits = bits[i:i+8]
-                                                        if len(byte_bits) == 8:
-                                                            byte_val = sum(int(b) << (7 - j) for j, b in enumerate(byte_bits))
-                                                            byte_list.append(byte_val)
-                                                    
-                                                    if len(byte_list) == expected_pubkey_size:
-                                                        ee_pubkey = bytes(byte_list)
-                                            except Exception as bit_err:
-                                                # Bit iteration failed
-                                                pass
-                                        
-                                        # METHOD 4: Last resort - try accessing BitString's internal _contents
-                                        if (ee_pubkey is None or len(ee_pubkey) != expected_pubkey_size) and expected_pubkey_size:
-                                            try:
-                                                # Try to access internal _contents if it exists
-                                                if hasattr(pubkey_bitstring, '_contents'):
-                                                    internal_data = pubkey_bitstring._contents
-                                                    if isinstance(internal_data, (bytes, bytearray)):
-                                                        result = bytes(internal_data)
-                                                        if len(result) == expected_pubkey_size:
-                                                            ee_pubkey = result
-                                                        elif len(result) > expected_pubkey_size:
-                                                            ee_pubkey = result[-expected_pubkey_size:]
-                                            except:
-                                                pass
+                                        ee_pubkey = extract_public_key_from_certificate(ee_cert_bytes, expected_pubkey_size)
                                         
                                         # Ensure we have bytes
                                         if ee_pubkey is None:
@@ -925,11 +612,11 @@ for repo in sorted(repos.iterdir()):
                                             error_details.append(f"{f.name}: {error_msg}")
                                             is_valid = False
                                         else:
-                                            # Verify both CMS and EE cert signatures
+                                            # Verify CMS signature only (no EE cert verification)
                                             cms_valid, ee_cert_valid, error_msg = verify_cms_object_signatures(
                                                 signed_data,
                                                 ee_pubkey,  # CMS signature uses EE cert's public key
-                                                None,  # Issuer key not available
+                                                None,  # No issuer key - skip EE cert verification
                                                 algo_name,
                                                 verifier,
                                                 metrics
@@ -937,10 +624,6 @@ for repo in sorted(repos.iterdir()):
                                             
                                             if cms_valid:
                                                 type_metrics['cms_valid'] += 1
-                                            if ee_cert_valid:
-                                                type_metrics['ee_cert_valid'] += 1
-                                            if cms_valid and ee_cert_valid:
-                                                type_metrics['both_valid'] += 1
                                             
                                             # Use CMS verification result as primary
                                             is_valid = cms_valid
@@ -1102,10 +785,7 @@ for repo in sorted(repos.iterdir()):
                             'avg_sig_size_bytes': (sum(type_metrics['sig_sizes']) / len(type_metrics['sig_sizes'])) if type_metrics['sig_sizes'] else 0,
                             'avg_pubkey_size_bytes': (sum(type_metrics['pubkey_sizes']) / len(type_metrics['pubkey_sizes'])) if type_metrics['pubkey_sizes'] else 0,
                             'ee_certs_found': type_metrics['ee_certs_found'],
-                            'issuer_certs_found': type_metrics['issuer_certs_found'],
-                            'cms_valid_count': type_metrics['cms_valid'],
-                            'ee_cert_valid_count': type_metrics['ee_cert_valid'],
-                            'both_valid_count': type_metrics['both_valid']
+                            'cms_valid_count': type_metrics['cms_valid']
                         }
                 
                 # Get comprehensive metrics summary
@@ -1192,8 +872,8 @@ for repo in sorted(repos.iterdir()):
                         print(f"      {obj_type}:")
                         print(f"        Count: {metrics_data['count']}, Verified: {metrics_data['verified']} ({metrics_data['verification_rate']:.1f}%)")
                         if metrics_data['ee_certs_found'] > 0:
-                            print(f"        EE certs found: {metrics_data['ee_certs_found']}, Issuer certs: {metrics_data['issuer_certs_found']}")
-                            print(f"        CMS valid: {metrics_data['cms_valid_count']}, EE cert valid: {metrics_data['ee_cert_valid_count']}, Both: {metrics_data['both_valid_count']}")
+                            print(f"        EE certs found: {metrics_data['ee_certs_found']}")
+                            print(f"        CMS valid: {metrics_data['cms_valid_count']}")
                         if metrics_data['avg_verify_time_ms'] > 0:
                             print(f"        Avg verify time: {metrics_data['avg_verify_time_ms']:.2f}ms")
                         if metrics_data['avg_sig_size_bytes'] > 0:

@@ -891,6 +891,178 @@ def extract_tbs_for_signing(data: bytes, object_type: str = None, file_path: str
         return data
 
 
+def find_parent_certificate(ee_cert_bytes: bytes, repo_path: Path) -> Optional[bytes]:
+    """
+    Find the parent (issuer) certificate for an EE certificate by searching the repository.
+    
+    Args:
+        ee_cert_bytes: EE certificate bytes
+        repo_path: Path to the repository directory containing certificates
+        
+    Returns:
+        Parent certificate bytes, or None if not found
+    """
+    if not ASN1_AVAILABLE:
+        return None
+    
+    try:
+        ee_cert = x509.Certificate.load(ee_cert_bytes)
+        ee_issuer = ee_cert['tbs_certificate']['issuer']
+        ee_issuer_dn = ee_issuer.dump()
+        
+        # Search for parent certificate in repository
+        # Parent cert's subject should match EE cert's issuer
+        for cert_file in repo_path.rglob("*.cer"):
+            try:
+                cert_data = cert_file.read_bytes()
+                parent_cert = x509.Certificate.load(cert_data)
+                parent_subject = parent_cert['tbs_certificate']['subject']
+                
+                # Check if this certificate's subject matches EE cert's issuer
+                if parent_subject.dump() == ee_issuer_dn:
+                    return cert_data
+            except:
+                continue
+        
+        return None
+    except Exception as e:
+        return None
+
+
+def extract_public_key_from_certificate(cert_bytes: bytes, expected_size: int) -> Optional[bytes]:
+    """
+    Extract public key from a certificate's SubjectPublicKeyInfo.
+    Handles both raw bytes and ASN.1 wrapped formats.
+    
+    Args:
+        cert_bytes: Certificate bytes
+        expected_size: Expected public key size in bytes
+        
+    Returns:
+        Public key bytes, or None if extraction fails
+    """
+    if not ASN1_AVAILABLE:
+        return None
+    
+    try:
+        cert = x509.Certificate.load(cert_bytes)
+        pubkey_info = cert['tbs_certificate']['subject_public_key_info']
+        pubkey_bitstring = pubkey_info['public_key']
+        
+        # Method 1: Try to get raw bytes from _bytes attribute (most direct)
+        if hasattr(pubkey_bitstring, '_bytes'):
+            raw_bytes = pubkey_bitstring._bytes
+            if isinstance(raw_bytes, bytes) and len(raw_bytes) >= expected_size:
+                # The key might be at the end of _bytes
+                if len(raw_bytes) == expected_size:
+                    return raw_bytes
+                elif len(raw_bytes) > expected_size:
+                    # Try from end (most likely for large keys)
+                    candidate = raw_bytes[-expected_size:]
+                    if len(candidate) == expected_size:
+                        return candidate
+        
+        # Method 2: Parse BitString.contents - might contain ASN.1 structure
+        if hasattr(pubkey_bitstring, 'contents'):
+            contents = pubkey_bitstring.contents
+            if isinstance(contents, (bytes, bytearray)):
+                contents_bytes = bytes(contents)
+                
+                # Skip unused bits byte if present
+                data_start = 1 if len(contents_bytes) > 0 and contents_bytes[0] == 0x00 else 0
+                asn1_data = contents_bytes[data_start:]
+                
+                # Check if it's an ASN.1 SEQUENCE containing INTEGER
+                if len(asn1_data) >= 3 and asn1_data[0] == 0x30:  # SEQUENCE
+                    # Parse SEQUENCE
+                    seq_idx = 1
+                    seq_len_byte = asn1_data[seq_idx]
+                    seq_idx += 1
+                    
+                    if (seq_len_byte & 0x80) == 0:
+                        seq_length = seq_len_byte
+                    else:
+                        seq_len_bytes = seq_len_byte & 0x7F
+                        if 0 < seq_len_bytes <= 4 and seq_idx + seq_len_bytes <= len(asn1_data):
+                            seq_length_bytes = asn1_data[seq_idx:seq_idx+seq_len_bytes]
+                            seq_length = int.from_bytes(seq_length_bytes, 'big')
+                            seq_idx += seq_len_bytes
+                        else:
+                            seq_length = 0
+                    
+                    # Look for INTEGER inside SEQUENCE
+                    if seq_idx < len(asn1_data) and asn1_data[seq_idx] == 0x02:  # INTEGER
+                        int_idx = seq_idx + 1
+                        int_len_byte = asn1_data[int_idx]
+                        int_idx += 1
+                        
+                        if (int_len_byte & 0x80) == 0:
+                            int_length = int_len_byte
+                        else:
+                            int_len_bytes = int_len_byte & 0x7F
+                            if 0 < int_len_bytes <= 4 and int_idx + int_len_bytes <= len(asn1_data):
+                                int_length_bytes = asn1_data[int_idx:int_idx+int_len_bytes]
+                                int_length = int.from_bytes(int_length_bytes, 'big')
+                                int_idx += int_len_bytes
+                            else:
+                                int_length = 0
+                        
+                        # Extract INTEGER data
+                        if int_idx + int_length <= len(asn1_data):
+                            int_data = asn1_data[int_idx:int_idx+int_length]
+                            
+                            # Remove leading zero padding
+                            while len(int_data) > expected_size and int_data[0] == 0x00:
+                                int_data = int_data[1:]
+                            
+                            if len(int_data) == expected_size:
+                                return int_data
+                            elif len(int_data) > expected_size:
+                                return int_data[-expected_size:]
+                
+                # Method 3: If contents is large enough, try direct extraction
+                if len(contents_bytes) >= expected_size + 1:
+                    # Skip unused bits byte and extract
+                    candidate = contents_bytes[-(expected_size+1):-1] if contents_bytes[-1] == 0x00 else contents_bytes[-expected_size:]
+                    if len(candidate) == expected_size:
+                        return candidate
+        
+        # Method 4: Search certificate dump for high-entropy 1312-byte sequence
+        cert_dump = cert.dump()
+        best_candidate = None
+        best_score = 0
+        
+        # Search in TBS area (where SubjectPublicKeyInfo should be)
+        tbs_dump = cert['tbs_certificate'].dump()
+        pubkey_info_dump = pubkey_info.dump()
+        pubkey_info_start = tbs_dump.find(pubkey_info_dump[:50])
+        
+        if pubkey_info_start >= 0:
+            # Search around SubjectPublicKeyInfo
+            search_start = max(0, pubkey_info_start - 500)
+            search_end = min(len(cert_dump), pubkey_info_start + len(pubkey_info_dump) + 2000)
+            
+            for search_idx in range(search_end - expected_size, search_start, -1):
+                if search_idx + expected_size > len(cert_dump):
+                    continue
+                candidate = cert_dump[search_idx:search_idx+expected_size]
+                if len(candidate) == expected_size:
+                    zero_count = candidate.count(0)
+                    unique_bytes = len(set(candidate))
+                    if zero_count < expected_size * 0.3 and unique_bytes > expected_size * 0.15:
+                        score = unique_bytes - (zero_count * 0.5)
+                        if score > best_score:
+                            best_score = score
+                            best_candidate = candidate
+        
+        if best_candidate and best_score > expected_size * 0.15:
+            return bytes(best_candidate)
+        
+        return None
+    except Exception:
+        return None
+
+
 def get_verification_metrics() -> VerificationMetrics:
     """Get the global verification metrics instance."""
     return _global_metrics

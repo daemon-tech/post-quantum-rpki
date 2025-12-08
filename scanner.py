@@ -286,32 +286,288 @@ def scan_file(file_path, algo_info, verifier, sample_num):
                 pubkey_info = cert['tbs_certificate']['subject_public_key_info']
                 pubkey_bitstring = pubkey_info['public_key']
                 
-                # DIAGNOSTIC: Show what we're working with
+                # DETAILED DIAGNOSTIC: Analyze how the key is stored
                 print(f"  SubjectPublicKeyInfo structure found")
                 try:
                     pubkey_info_dump = pubkey_info.dump()
                     print(f"  SubjectPublicKeyInfo dump size: {len(pubkey_info_dump):,} bytes")
                     print(f"  BitString type: {type(pubkey_bitstring).__name__}")
                     
-                    # Try to get BitString dump
+                    # Analyze BitString dump structure
                     try:
                         bitstring_dump = pubkey_bitstring.dump()
+                        print(f"\n  === BitString Dump Analysis ===")
                         print(f"  BitString dump size: {len(bitstring_dump):,} bytes")
-                        print(f"  BitString first 32 bytes (hex): {bitstring_dump[:32].hex()}")
-                        if len(bitstring_dump) > 32:
-                            print(f"  BitString last 32 bytes (hex): {bitstring_dump[-32:].hex()}")
+                        print(f"  First 64 bytes (hex): {bitstring_dump[:64].hex()}")
+                        if len(bitstring_dump) > 64:
+                            print(f"  Last 64 bytes (hex): {bitstring_dump[-64:].hex()}")
+                        
+                        # Parse BitString structure: [0x03 tag][length][unused_bits][data]
+                        if len(bitstring_dump) >= 3 and bitstring_dump[0] == 0x03:
+                            print(f"  ✓ BitString tag found (0x03)")
+                            idx = 1
+                            len_byte = bitstring_dump[idx]
+                            idx += 1
+                            
+                            if (len_byte & 0x80) == 0:
+                                data_length = len_byte
+                                print(f"  Short form length: {data_length} bytes")
+                            else:
+                                len_bytes = len_byte & 0x7F
+                                if 0 < len_bytes <= 4 and idx + len_bytes <= len(bitstring_dump):
+                                    length_bytes = bitstring_dump[idx:idx+len_bytes]
+                                    data_length = int.from_bytes(length_bytes, 'big')
+                                    idx += len_bytes
+                                    print(f"  Long form length: {data_length} bytes ({len_bytes} length bytes)")
+                                else:
+                                    data_length = 0
+                            
+                            if idx < len(bitstring_dump):
+                                unused_bits = bitstring_dump[idx]
+                                idx += 1
+                                print(f"  Unused bits: {unused_bits}")
+                                print(f"  Data starts at offset: {idx}")
+                                print(f"  Expected data length: {data_length - 1} bytes (after unused_bits)")
+                                
+                                if idx + (data_length - 1) <= len(bitstring_dump):
+                                    actual_data = bitstring_dump[idx:idx+(data_length-1)]
+                                    print(f"  Actual data length: {len(actual_data)} bytes")
+                                    print(f"  Data first 32 bytes: {actual_data[:32].hex()}")
+                                    if len(actual_data) > 32:
+                                        print(f"  Data last 32 bytes: {actual_data[-32:].hex()}")
                     except Exception as dump_err:
-                        print(f"  Could not dump BitString: {dump_err}")
+                        print(f"  Could not analyze BitString dump: {dump_err}")
                     
-                    # Try .contents property
+                    # Analyze .contents property
+                    print(f"\n  === BitString.contents Analysis ===")
                     if hasattr(pubkey_bitstring, 'contents'):
                         contents = pubkey_bitstring.contents
                         print(f"  BitString.contents type: {type(contents).__name__}")
                         if isinstance(contents, (bytes, bytearray)):
-                            print(f"  BitString.contents size: {len(contents):,} bytes")
-                            print(f"  BitString.contents first 32 bytes (hex): {contents[:32].hex() if len(contents) >= 32 else contents.hex()}")
+                            contents_bytes = bytes(contents)
+                            print(f"  BitString.contents size: {len(contents_bytes):,} bytes")
+                            print(f"  Contents first 64 bytes (hex): {contents_bytes[:64].hex() if len(contents_bytes) >= 64 else contents_bytes.hex()}")
+                            if len(contents_bytes) > 64:
+                                print(f"  Contents last 64 bytes (hex): {contents_bytes[-64:].hex()}")
+                            
+                            # Check if it's an ASN.1 structure
+                            if len(contents_bytes) >= 2:
+                                first_byte = contents_bytes[0]
+                                if first_byte == 0x02:
+                                    print(f"  ✓ ASN.1 INTEGER detected (0x02)")
+                                elif first_byte == 0x30:
+                                    print(f"  ✓ ASN.1 SEQUENCE detected (0x30)")
+                                elif first_byte == 0x00:
+                                    print(f"  ⚠ First byte is 0x00 (unused bits or padding)")
+                    else:
+                        print(f"  No .contents property")
+                    
+                    # Try to access raw bits/data from ParsableOctetBitString
+                    print(f"\n  === BitString Raw Data Access Test ===")
+                    try:
+                        # Check all attributes that might contain the raw data
+                        attrs_to_check = ['_contents', '_bytes', 'contents', 'data', '_data', 'value', '_value', 
+                                         'bits', '_bits', 'octets', '_octets', 'raw', '_raw']
+                        
+                        found_raw_data = False
+                        for attr_name in attrs_to_check:
+                            if hasattr(pubkey_bitstring, attr_name):
+                                attr_value = getattr(pubkey_bitstring, attr_name)
+                                print(f"  Found attribute: {attr_name} = {type(attr_value).__name__}")
+                                
+                                if isinstance(attr_value, (bytes, bytearray)):
+                                    print(f"    Size: {len(attr_value):,} bytes")
+                                    if len(attr_value) >= algo_info['public_key']:
+                                        print(f"    ✓ Large enough! First 32 bytes: {attr_value[:32].hex()}")
+                                        if len(attr_value) > 32:
+                                            print(f"    Last 32 bytes: {attr_value[-32:].hex()}")
+                                        found_raw_data = True
+                                    elif len(attr_value) > 0:
+                                        print(f"    First 32 bytes: {attr_value[:32].hex() if len(attr_value) >= 32 else attr_value.hex()}")
+                                elif isinstance(attr_value, (list, tuple)):
+                                    print(f"    Length: {len(attr_value)}")
+                                    if len(attr_value) >= algo_info['public_key'] * 8:
+                                        print(f"    ✓ Large enough for bits! Converting...")
+                                        # Try to convert bits to bytes
+                                        byte_list = []
+                                        for i in range(0, min(len(attr_value), algo_info['public_key'] * 8), 8):
+                                            byte_bits = attr_value[i:i+8]
+                                            if len(byte_bits) == 8:
+                                                byte_val = sum(int(b) << (7 - j) for j, b in enumerate(byte_bits))
+                                                byte_list.append(byte_val)
+                                        if len(byte_list) == algo_info['public_key']:
+                                            extracted_key = bytes(byte_list)
+                                            print(f"    ✓ Successfully extracted {len(extracted_key)} bytes")
+                                            print(f"    First 32 bytes: {extracted_key[:32].hex()}")
+                                            found_raw_data = True
+                        
+                        if not found_raw_data:
+                            print(f"  ⚠ No raw data found in accessible attributes")
+                            
+                            # Try to get the internal representation
+                            print(f"\n  === Trying to access internal representation ===")
+                            try:
+                                # ParsableOctetBitString might store data differently
+                                # Try to get the dump and parse it manually
+                                bitstring_dump = pubkey_bitstring.dump()
+                                
+                                # The dump should contain: [0x03][length][unused_bits][data]
+                                # We already parsed this above, but let's try to extract the actual key
+                                # The key was stored as bits, so the data section should contain the bits
+                                
+                                # Actually, wait - if the key is 1312 bytes = 10496 bits
+                                # But we only have 270 bytes of data, that's 2160 bits
+                                # So the key is definitely not in the BitString!
+                                
+                                print(f"  BitString data section is only {270} bytes")
+                                print(f"  Need {algo_info['public_key']} bytes = {algo_info['public_key'] * 8} bits")
+                                print(f"  ✗ Key is NOT in the BitString - it's stored elsewhere!")
+                                
+                            except Exception as internal_err:
+                                print(f"  Internal access error: {internal_err}")
+                                
+                    except Exception as access_err:
+                        print(f"  ✗ Raw data access failed: {access_err}")
+                        import traceback
+                        traceback.print_exc()
+                    
+                    # CRITICAL: The key should be raw bytes in BIT STRING, but we see ASN.1 structure
+                    # According to RFC 5280, the BIT STRING should contain raw key bytes directly
+                    # Let's check the RAW certificate bytes (before ASN.1 parsing) to find where the key is
+                    print(f"\n  === RAW Certificate Bytes Analysis ===")
+                    try:
+                        # Read raw certificate bytes (before any ASN.1 parsing)
+                        raw_cert_bytes = signed_data
+                        print(f"  Raw certificate size: {len(raw_cert_bytes):,} bytes")
+                        
+                        # Find SubjectPublicKeyInfo in raw bytes by looking for the OID
+                        # ML-DSA-44 OID: 1.3.6.1.4.1.2.267.7.4.4
+                        # Encoded as: 2b 06 01 04 01 02 81 0b 07 04 04 (DER encoding)
+                        ml_dsa_oid_hex = "2b0601040102810b070404"
+                        ml_dsa_oid_bytes = bytes.fromhex(ml_dsa_oid_hex)
+                        
+                        oid_positions = []
+                        search_pos = 0
+                        while True:
+                            pos = raw_cert_bytes.find(ml_dsa_oid_bytes, search_pos)
+                            if pos == -1:
+                                break
+                            oid_positions.append(pos)
+                            search_pos = pos + 1
+                        
+                        if oid_positions:
+                            print(f"  Found ML-DSA-44 OID at {len(oid_positions)} position(s): {oid_positions}")
+                            
+                            for oid_pos in oid_positions[:2]:  # Check first 2 occurrences
+                                print(f"\n  Analyzing OID at offset {oid_pos}:")
+                                
+                                # After OID, there should be NULL parameters, then BIT STRING tag (0x03)
+                                # Look for BIT STRING tag after OID (within next 50 bytes)
+                                bitstring_search_start = oid_pos + len(ml_dsa_oid_bytes)
+                                bitstring_search_end = min(len(raw_cert_bytes), bitstring_search_start + 100)
+                                
+                                bitstring_pos = raw_cert_bytes.find(b'\x03', bitstring_search_start, bitstring_search_end)
+                                if bitstring_pos != -1:
+                                    print(f"    Found BIT STRING tag (0x03) at offset {bitstring_pos}")
+                                    
+                                    # Parse BIT STRING: [0x03][length][unused_bits][data]
+                                    if bitstring_pos + 3 < len(raw_cert_bytes):
+                                        idx = bitstring_pos + 1
+                                        len_byte = raw_cert_bytes[idx]
+                                        idx += 1
+                                        
+                                        if (len_byte & 0x80) == 0:
+                                            bitstring_length = len_byte
+                                            data_start = idx + 1  # +1 for unused_bits
+                                        else:
+                                            len_bytes = len_byte & 0x7F
+                                            if 0 < len_bytes <= 4 and idx + len_bytes < len(raw_cert_bytes):
+                                                length_bytes = raw_cert_bytes[idx:idx+len_bytes]
+                                                bitstring_length = int.from_bytes(length_bytes, 'big')
+                                                idx += len_bytes
+                                                data_start = idx + 1  # +1 for unused_bits
+                                            else:
+                                                bitstring_length = 0
+                                                data_start = idx
+                                        
+                                        if data_start < len(raw_cert_bytes):
+                                            unused_bits = raw_cert_bytes[data_start - 1] if data_start > 0 else 0
+                                            print(f"    BIT STRING length: {bitstring_length} bytes")
+                                            print(f"    Unused bits: {unused_bits}")
+                                            print(f"    Data starts at offset: {data_start}")
+                                            
+                                            # The data should be the raw 1312-byte key
+                                            if data_start + algo_info['public_key'] <= len(raw_cert_bytes):
+                                                raw_key_candidate = raw_cert_bytes[data_start:data_start+algo_info['public_key']]
+                                                print(f"    ✓ Extracted {len(raw_key_candidate)} bytes from BIT STRING data")
+                                                print(f"    First 32 bytes: {raw_key_candidate[:32].hex()}")
+                                                print(f"    Last 32 bytes: {raw_key_candidate[-32:].hex()}")
+                                                
+                                                # Check entropy
+                                                zero_count = raw_key_candidate.count(0)
+                                                unique_bytes = len(set(raw_key_candidate))
+                                                print(f"    Entropy check: {zero_count} zeros, {unique_bytes} unique bytes")
+                                                
+                                                if zero_count < algo_info['public_key'] * 0.3 and unique_bytes > algo_info['public_key'] * 0.15:
+                                                    print(f"    ✓ High entropy - likely the actual public key!")
+                                                    if not pubkey or len(pubkey) != algo_info['public_key']:
+                                                        pubkey = raw_key_candidate
+                                                        extraction_method = f"Raw bytes from BIT STRING at offset {data_start}"
+                                                else:
+                                                    print(f"    ⚠ Low entropy - might not be the key")
+                                            else:
+                                                print(f"    ⚠ Not enough data: need {algo_info['public_key']}, have {len(raw_cert_bytes) - data_start}")
+                        else:
+                            print(f"  ⚠ ML-DSA-44 OID not found in raw certificate bytes")
+                            
+                    except Exception as raw_err:
+                        print(f"  Raw bytes analysis error: {raw_err}")
+                        import traceback
+                        traceback.print_exc()
+                    
+                    # Search certificate for 1312-byte sequences
+                    print(f"\n  === Certificate-Wide Search ===")
+                    try:
+                        cert_dump = cert.dump()
+                        print(f"  Certificate dump size: {len(cert_dump):,} bytes")
+                        
+                        # Find all 1312-byte sequences with high entropy
+                        candidates = []
+                        for search_idx in range(len(cert_dump) - algo_info['public_key'], 
+                                               max(0, len(cert_dump) - algo_info['public_key'] - 5000), -1):
+                            candidate = cert_dump[search_idx:search_idx+algo_info['public_key']]
+                            if len(candidate) == algo_info['public_key']:
+                                zero_count = candidate.count(0)
+                                unique_bytes = len(set(candidate))
+                                if zero_count < algo_info['public_key'] * 0.3 and unique_bytes > algo_info['public_key'] * 0.15:
+                                    score = unique_bytes - (zero_count * 0.5)
+                                    offset_from_end = len(cert_dump) - search_idx - algo_info['public_key']
+                                    candidates.append((offset_from_end, score, candidate, search_idx))
+                        
+                        if candidates:
+                            # Sort by score (highest first)
+                            candidates.sort(key=lambda x: x[1], reverse=True)
+                            print(f"  Found {len(candidates)} candidate(s) with high entropy:")
+                            for i, (offset, score, cand, pos) in enumerate(candidates[:5], 1):  # Show top 5
+                                print(f"    {i}. Offset {offset} bytes from end (pos {pos}), score: {score:.1f}")
+                                print(f"       First 16 bytes: {cand[:16].hex()}")
+                                print(f"       Last 16 bytes: {cand[-16:].hex()}")
+                                
+                                # Check if this is in TBS or signature area
+                                tbs_size = len(cert['tbs_certificate'].dump())
+                                if pos < tbs_size:
+                                    print(f"       ✓ In TBS certificate area")
+                                else:
+                                    print(f"       ⚠ In signature area (likely wrong!)")
+                        else:
+                            print(f"  No high-entropy candidates found")
+                    except Exception as search_err:
+                        print(f"  Search error: {search_err}")
+                        
                 except Exception as diag_err:
                     print(f"  Diagnostic error: {diag_err}")
+                    import traceback
+                    traceback.print_exc()
                 
                 # Extract public key using multiple methods
                 pubkey = None
@@ -322,7 +578,9 @@ def scan_file(file_path, algo_info, verifier, sample_num):
                 if pubkey and len(pubkey) == algo_info['public_key']:
                     extraction_method = "extract_bytes_from_bitstring"
                 
-                # Method 2: Try .contents directly - might be ASN.1 INTEGER structure
+                # Method 2: Parse BitString.contents - it contains ASN.1 SEQUENCE with INTEGER
+                # Based on scanner output: contents starts with 00 (unused bits), then 30 82 010a (SEQUENCE), 
+                # then 02 82 0101 (INTEGER of 257 bytes). The key might be in the INTEGER or after it.
                 if not pubkey or len(pubkey) != algo_info['public_key']:
                     try:
                         if hasattr(pubkey_bitstring, 'contents'):
@@ -330,52 +588,75 @@ def scan_file(file_path, algo_info, verifier, sample_num):
                             if isinstance(contents, (bytes, bytearray)):
                                 contents_bytes = bytes(contents)
                                 
-                                # Check if it's an ASN.1 INTEGER structure
-                                # INTEGER format: [0x02 tag][length][data]
-                                if len(contents_bytes) >= 3 and contents_bytes[0] == 0x02:
-                                    # Parse INTEGER
-                                    idx = 1
-                                    len_byte = contents_bytes[idx]
-                                    idx += 1
-                                    
-                                    if (len_byte & 0x80) == 0:
-                                        int_length = len_byte
-                                    else:
-                                        len_bytes = len_byte & 0x7F
-                                        if 0 < len_bytes <= 4 and idx + len_bytes <= len(contents_bytes):
-                                            length_bytes = contents_bytes[idx:idx+len_bytes]
-                                            int_length = int.from_bytes(length_bytes, 'big')
-                                            idx += len_bytes
-                                        else:
-                                            int_length = 0
-                                    
-                                    # Extract integer data (this should be the public key)
-                                    if idx + int_length <= len(contents_bytes):
-                                        int_data = contents_bytes[idx:idx+int_length]
-                                        
-                                        # INTEGER might have leading zero padding - remove it
-                                        if int_data[0] == 0x00 and len(int_data) > algo_info['public_key']:
-                                            int_data = int_data[1:]
-                                        
-                                        if len(int_data) == algo_info['public_key']:
-                                            pubkey = int_data
-                                            extraction_method = "ASN.1 INTEGER from BitString.contents"
-                                        elif len(int_data) > algo_info['public_key']:
-                                            # Take from end (most likely)
-                                            pubkey = int_data[-algo_info['public_key']:]
-                                            if len(pubkey) == algo_info['public_key']:
-                                                extraction_method = "ASN.1 INTEGER from BitString.contents (from end)"
+                                # Skip unused bits byte (first byte is 0x00)
+                                data_start = 1 if len(contents_bytes) > 0 and contents_bytes[0] == 0x00 else 0
+                                asn1_data = contents_bytes[data_start:]
                                 
-                                # If not INTEGER structure, try direct extraction
-                                if (not pubkey or len(pubkey) != algo_info['public_key']) and len(contents_bytes) >= algo_info['public_key']:
-                                    # Try from end (most likely)
-                                    pubkey = contents_bytes[-algo_info['public_key']:]
+                                # Parse ASN.1 SEQUENCE: [0x30 tag][length][INTEGER...]
+                                if len(asn1_data) >= 3 and asn1_data[0] == 0x30:
+                                    seq_idx = 1
+                                    seq_len_byte = asn1_data[seq_idx]
+                                    seq_idx += 1
+                                    
+                                    if (seq_len_byte & 0x80) == 0:
+                                        seq_length = seq_len_byte
+                                    else:
+                                        seq_len_bytes = seq_len_byte & 0x7F
+                                        if 0 < seq_len_bytes <= 4 and seq_idx + seq_len_bytes <= len(asn1_data):
+                                            seq_length_bytes = asn1_data[seq_idx:seq_idx+seq_len_bytes]
+                                            seq_length = int.from_bytes(seq_length_bytes, 'big')
+                                            seq_idx += seq_len_bytes
+                                        else:
+                                            seq_length = 0
+                                    
+                                    # Now parse INTEGER inside SEQUENCE: [0x02 tag][length][data]
+                                    if seq_idx < len(asn1_data) and asn1_data[seq_idx] == 0x02:
+                                        int_idx = seq_idx + 1
+                                        int_len_byte = asn1_data[int_idx]
+                                        int_idx += 1
+                                        
+                                        if (int_len_byte & 0x80) == 0:
+                                            int_length = int_len_byte
+                                        else:
+                                            int_len_bytes = int_len_byte & 0x7F
+                                            if 0 < int_len_bytes <= 4 and int_idx + int_len_bytes <= len(asn1_data):
+                                                int_length_bytes = asn1_data[int_idx:int_idx+int_len_bytes]
+                                                int_length = int.from_bytes(int_length_bytes, 'big')
+                                                int_idx += int_len_bytes
+                                            else:
+                                                int_length = 0
+                                        
+                                        # Extract INTEGER data
+                                        if int_idx + int_length <= len(asn1_data):
+                                            int_data = asn1_data[int_idx:int_idx+int_length]
+                                            
+                                            # Remove leading zero padding if present
+                                            while len(int_data) > algo_info['public_key'] and int_data[0] == 0x00:
+                                                int_data = int_data[1:]
+                                            
+                                            if len(int_data) == algo_info['public_key']:
+                                                pubkey = int_data
+                                                extraction_method = "ASN.1 INTEGER from SEQUENCE in BitString.contents"
+                                            elif len(int_data) > algo_info['public_key']:
+                                                # Take from end
+                                                pubkey = int_data[-algo_info['public_key']:]
+                                                if len(pubkey) == algo_info['public_key']:
+                                                    extraction_method = "ASN.1 INTEGER from SEQUENCE (from end)"
+                                    
+                                    # If INTEGER doesn't contain full key, check if key is after SEQUENCE
+                                    if (not pubkey or len(pubkey) != algo_info['public_key']) and seq_idx + seq_length < len(asn1_data):
+                                        # Key might be stored after the SEQUENCE
+                                        remaining = asn1_data[seq_idx + seq_length:]
+                                        if len(remaining) >= algo_info['public_key']:
+                                            pubkey = remaining[:algo_info['public_key']]
+                                            extraction_method = "Raw bytes after ASN.1 SEQUENCE in BitString.contents"
+                                
+                                # Fallback: try direct extraction from contents (skip first byte if 0x00)
+                                if (not pubkey or len(pubkey) != algo_info['public_key']) and len(contents_bytes) >= algo_info['public_key'] + 1:
+                                    # Skip unused bits byte and try from end
+                                    pubkey = contents_bytes[-(algo_info['public_key']+1):-1] if contents_bytes[-1] == 0x00 else contents_bytes[-algo_info['public_key']:]
                                     if len(pubkey) == algo_info['public_key']:
-                                        extraction_method = "BitString.contents (from end)"
-                                    # Try from start
-                                    elif len(contents_bytes) == algo_info['public_key']:
-                                        pubkey = contents_bytes
-                                        extraction_method = "BitString.contents (exact)"
+                                        extraction_method = "Direct from BitString.contents (skipping unused bits)"
                     except Exception as contents_err:
                         pass
                 
