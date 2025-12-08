@@ -228,7 +228,7 @@ def scan_file(file_path, algo_info, verifier, sample_num):
         if len(signature) != algo_info['signature']:
             print(f"  ⚠️  WARNING: Signature size mismatch!")
         
-        # For CMS objects, extract EE certificate
+        # Extract public key based on object type
         if object_type in ('roa', 'manifest'):
             print(f"\n--- CMS Object Analysis ---")
             ee_cert_bytes = extract_ee_certificate_from_cms(signed_data)
@@ -279,9 +279,173 @@ def scan_file(file_path, algo_info, verifier, sample_num):
             else:
                 print(f"  ⚠️  No EE certificate found in CMS structure")
         
+        elif object_type == 'certificate':
+            print(f"\n--- Certificate Object Analysis ---")
+            try:
+                cert = x509.Certificate.load(signed_data)
+                pubkey_info = cert['tbs_certificate']['subject_public_key_info']
+                pubkey_bitstring = pubkey_info['public_key']
+                
+                # DIAGNOSTIC: Show what we're working with
+                print(f"  SubjectPublicKeyInfo structure found")
+                try:
+                    pubkey_info_dump = pubkey_info.dump()
+                    print(f"  SubjectPublicKeyInfo dump size: {len(pubkey_info_dump):,} bytes")
+                    print(f"  BitString type: {type(pubkey_bitstring).__name__}")
+                    
+                    # Try to get BitString dump
+                    try:
+                        bitstring_dump = pubkey_bitstring.dump()
+                        print(f"  BitString dump size: {len(bitstring_dump):,} bytes")
+                        print(f"  BitString first 32 bytes (hex): {bitstring_dump[:32].hex()}")
+                        if len(bitstring_dump) > 32:
+                            print(f"  BitString last 32 bytes (hex): {bitstring_dump[-32:].hex()}")
+                    except Exception as dump_err:
+                        print(f"  Could not dump BitString: {dump_err}")
+                    
+                    # Try .contents property
+                    if hasattr(pubkey_bitstring, 'contents'):
+                        contents = pubkey_bitstring.contents
+                        print(f"  BitString.contents type: {type(contents).__name__}")
+                        if isinstance(contents, (bytes, bytearray)):
+                            print(f"  BitString.contents size: {len(contents):,} bytes")
+                            print(f"  BitString.contents first 32 bytes (hex): {contents[:32].hex() if len(contents) >= 32 else contents.hex()}")
+                except Exception as diag_err:
+                    print(f"  Diagnostic error: {diag_err}")
+                
+                # Extract public key using multiple methods
+                pubkey = None
+                extraction_method = None
+                
+                # Method 1: Use extraction function
+                pubkey = extract_bytes_from_bitstring(pubkey_bitstring, algo_info['public_key'])
+                if pubkey and len(pubkey) == algo_info['public_key']:
+                    extraction_method = "extract_bytes_from_bitstring"
+                
+                # Method 2: Try .contents directly
+                if not pubkey or len(pubkey) != algo_info['public_key']:
+                    try:
+                        if hasattr(pubkey_bitstring, 'contents'):
+                            contents = pubkey_bitstring.contents
+                            if isinstance(contents, (bytes, bytearray)):
+                                contents_bytes = bytes(contents)
+                                if len(contents_bytes) >= algo_info['public_key']:
+                                    # Try from end (most likely)
+                                    pubkey = contents_bytes[-algo_info['public_key']:]
+                                    if len(pubkey) == algo_info['public_key']:
+                                        extraction_method = "BitString.contents (from end)"
+                                    # Try from start
+                                    elif len(contents_bytes) == algo_info['public_key']:
+                                        pubkey = contents_bytes
+                                        extraction_method = "BitString.contents (exact)"
+                    except:
+                        pass
+                
+                # Method 3: Parse BitString dump manually
+                if not pubkey or len(pubkey) != algo_info['public_key']:
+                    try:
+                        bitstring_dump = pubkey_bitstring.dump()
+                        # BitString format: [0x03 tag][length][unused_bits:1 byte][data]
+                        if len(bitstring_dump) >= 3 and bitstring_dump[0] == 0x03:
+                            idx = 1
+                            # Parse length
+                            len_byte = bitstring_dump[idx]
+                            idx += 1
+                            if (len_byte & 0x80) == 0:
+                                data_length = len_byte
+                            else:
+                                len_bytes = len_byte & 0x7F
+                                if 0 < len_bytes <= 4 and idx + len_bytes <= len(bitstring_dump):
+                                    length_bytes = bitstring_dump[idx:idx+len_bytes]
+                                    data_length = int.from_bytes(length_bytes, 'big')
+                                    idx += len_bytes
+                                else:
+                                    data_length = 0
+                            
+                            # Skip unused_bits byte
+                            if idx < len(bitstring_dump):
+                                idx += 1  # Skip unused_bits
+                                
+                                # Extract data
+                                if idx + algo_info['public_key'] <= len(bitstring_dump):
+                                    pubkey = bitstring_dump[idx:idx+algo_info['public_key']]
+                                    if len(pubkey) == algo_info['public_key']:
+                                        extraction_method = "manual BitString dump parse"
+                                elif len(bitstring_dump) >= algo_info['public_key']:
+                                    # Try from end
+                                    pubkey = bitstring_dump[-algo_info['public_key']:]
+                                    if len(pubkey) == algo_info['public_key']:
+                                        extraction_method = "manual BitString dump parse (from end)"
+                    except Exception as parse_err:
+                        pass
+                
+                # Method 4: Search in pubkey_info_dump
+                if not pubkey or len(pubkey) != algo_info['public_key']:
+                    try:
+                        pubkey_info_dump = pubkey_info.dump()
+                        if len(pubkey_info_dump) >= algo_info['public_key']:
+                            # Search for the key (should be near the end)
+                            for search_idx in range(len(pubkey_info_dump) - algo_info['public_key'], 
+                                                   max(0, len(pubkey_info_dump) - algo_info['public_key'] - 100), -1):
+                                candidate = pubkey_info_dump[search_idx:search_idx+algo_info['public_key']]
+                                if len(candidate) == algo_info['public_key']:
+                                    # Check if it looks like a key (high entropy)
+                                    zero_count = candidate.count(0)
+                                    unique_bytes = len(set(candidate))
+                                    if zero_count < algo_info['public_key'] * 0.3 and unique_bytes > algo_info['public_key'] * 0.15:
+                                        pubkey = bytes(candidate)
+                                        extraction_method = "heuristic search in SubjectPublicKeyInfo dump"
+                                        break
+                    except:
+                        pass
+                
+                if pubkey and len(pubkey) == algo_info['public_key']:
+                    print(f"\n  ✅ Public key extracted: {len(pubkey):,} bytes (expected: {algo_info['public_key']})")
+                    print(f"     Method: {extraction_method}")
+                    print(f"     First 16 bytes (hex): {pubkey[:16].hex()}")
+                    print(f"     Last 16 bytes (hex): {pubkey[-16:].hex()}")
+                    
+                    # Try verification
+                    print(f"\n--- Verification Attempt ---")
+                    print(f"  Note: Certificate signature is signed by issuer's private key")
+                    print(f"  We're using the certificate's own public key (self-verification test)")
+                    try:
+                        is_valid = verifier.verify(tbs_data, signature, pubkey)
+                        if is_valid:
+                            print(f"  ✅ VERIFICATION SUCCESSFUL!")
+                            print(f"     This means the certificate is self-signed (signed with its own key)")
+                        else:
+                            print(f"  ❌ VERIFICATION FAILED")
+                            print(f"     This is expected if the certificate is signed by an issuer (CA)")
+                            print(f"     To verify properly, we need the issuer's public key")
+                            print(f"     OR if self-signed, the key extraction may be wrong")
+                            
+                            # Show diagnostic info
+                            print(f"\n  Diagnostic info:")
+                            print(f"    TBS data size: {len(tbs_data):,} bytes")
+                            print(f"    Signature size: {len(signature):,} bytes")
+                            print(f"    Public key size: {len(pubkey):,} bytes")
+                            print(f"    TBS first 32 bytes (hex): {tbs_data[:32].hex()}")
+                            
+                    except Exception as verify_err:
+                        print(f"  ❌ VERIFICATION ERROR: {verify_err}")
+                        print(f"     Exception type: {type(verify_err).__name__}")
+                else:
+                    print(f"\n  ❌ Public key extraction failed")
+                    print(f"     Extracted: {len(pubkey) if pubkey else 0} bytes, expected: {algo_info['public_key']} bytes")
+                    print(f"     This is the core issue - public key extraction from certificate is failing")
+                    print(f"\n  🔍 Debugging info:")
+                    print(f"     Try checking the BitString structure manually")
+                    print(f"     The public key should be 1312 bytes somewhere in the certificate")
+                    
+            except Exception as cert_err:
+                print(f"  ❌ ERROR parsing certificate: {cert_err}")
+                import traceback
+                traceback.print_exc()
+        
         else:
-            # Non-CMS object - would need public key from elsewhere
-            print(f"\n--- Non-CMS Object ---")
+            # Other object types (CRL, etc.)
+            print(f"\n--- {object_type.upper()} Object ---")
             print(f"  This object type requires public key from issuer certificate")
             print(f"  or a pre-extracted key file")
         
