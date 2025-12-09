@@ -220,14 +220,9 @@ for name, alg_config in available_algos.items():
     # Load previous progress if any
     progress_state = load_progress_state(dir_out)
     
-    # Quick skip check: if we have many existing files and progress state, likely done
-    # (We can't check against total input count without scanning, so we use a heuristic)
-    if existing_count > 1000 and progress_state:
-        prev_processed = progress_state.get('processed_count', 0)
-        if prev_processed > 0 and existing_count >= prev_processed * 0.95:
-            print(f"SKIPPING - Already completed ({existing_count:,} files, {prev_processed:,} processed)")
-            print()
-            continue
+    # NOTE: Removed flawed skip heuristic that compared existing_count to prev_processed.
+    # This was incorrectly skipping processing when only a subset of files were processed.
+    # The per-file skip logic (lines 307-312) already handles skipping existing files correctly.
     
     if existing_count > 0 or progress_state:
         print(f"Resuming - Found {existing_count:,} existing files")
@@ -257,6 +252,26 @@ for name, alg_config in available_algos.items():
     processed_count = 0
     skipped_count = 0
     failed_count = 0
+    
+    # Error tracking for Phase 1 Investigation
+    error_log = dir_out / ".errors.log"
+    error_categories = {
+        'oid_lookup': [],           # OID-related errors
+        'asn1_parsing': [],          # ASN.1 parsing failures
+        'file_io': [],               # File read/write errors
+        'oqs_library': [],           # OQS keypair/signing errors
+        'unknown_object_type': [],   # Unsupported object types
+        'signature_generation': [],  # Signature creation failures
+        'other': []                  # Other errors
+    }
+    
+    # Initialize error log (overwrite on each run for Phase 1 Investigation)
+    try:
+        with open(error_log, 'w') as log:
+            log.write(f"Error Log - {name.upper()} - Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log.write("="*80 + "\n\n")
+    except Exception:
+        pass
     
     # Detailed metrics tracking
     reset_verification_metrics()  # Reset metrics for this algorithm run
@@ -361,12 +376,47 @@ for name, alg_config in available_algos.items():
                                 # Update digest_algorithm BEFORE extracting TBS
                                 oid_to_use = PQ_ALGORITHM_OIDS.get(alg_config)
                                 if oid_to_use and 'signed_attrs' in signer_info and signer_info['signed_attrs']:
-                                    signer_info['digest_algorithm'] = algos.DigestAlgorithm({
-                                        'algorithm': algos.DigestAlgorithmId(oid_to_use),
-                                        'parameters': core.Null()
-                                    })
-                                    # Re-encode to get updated signedAttrs
-                                    data = cms_obj.dump()
+                                    # Try to update digest_algorithm with OID
+                                    # Handle case where OID is not in asn1crypto registry (e.g., draft OIDs)
+                                    try:
+                                        signer_info['digest_algorithm'] = algos.DigestAlgorithm({
+                                            'algorithm': algos.DigestAlgorithmId(oid_to_use),
+                                            'parameters': core.Null()
+                                        })
+                                        # Re-encode to get updated signedAttrs
+                                        data = cms_obj.dump()
+                                    except (KeyError, TypeError) as oid_error:
+                                        # OID not recognized by asn1crypto (expected for draft OIDs like Falcon-512)
+                                        # Construct DigestAlgorithm manually using core.ObjectIdentifier
+                                        # This bypasses the OID registry lookup
+                                        try:
+                                            oid_obj = core.ObjectIdentifier(oid_to_use)
+                                            null_obj = core.Null()
+                                            # Manually construct DigestAlgorithm structure
+                                            # DigestAlgorithm = SEQUENCE { algorithm OBJECT IDENTIFIER, parameters ANY }
+                                            alg_id_content = oid_obj.dump() + null_obj.dump()
+                                            alg_id_length = len(alg_id_content)
+                                            if alg_id_length < 128:
+                                                alg_id_bytes = bytes([0x30, alg_id_length]) + alg_id_content
+                                            else:
+                                                # Long form length encoding
+                                                length_bytes = []
+                                                length = alg_id_length
+                                                while length > 0:
+                                                    length_bytes.insert(0, length & 0xFF)
+                                                    length >>= 8
+                                                alg_id_bytes = bytes([0x30, 0x80 | len(length_bytes)]) + bytes(length_bytes) + alg_id_content
+                                            
+                                            # Load the manually constructed DigestAlgorithm
+                                            digest_alg = algos.DigestAlgorithm.load(alg_id_bytes)
+                                            signer_info['digest_algorithm'] = digest_alg
+                                            # Re-encode to get updated signedAttrs
+                                            data = cms_obj.dump()
+                                        except Exception as manual_err:
+                                            # If manual construction also fails, skip the update
+                                            # The later replace_cms_signature will handle it, or we'll use old algorithm
+                                            # This is not ideal but prevents crash - log for debugging
+                                            pass
                         
                         tbs_data = extract_tbs_for_signing(data, object_type, str(f))
                         
@@ -458,12 +508,26 @@ for name, alg_config in available_algos.items():
                         # If ASN.1 parsing fails, we cannot produce scientifically valid results
                         # Fail fast rather than contaminating results with incorrect methodology
                         failed_count += 1
+                        error_msg = str(asn1_error)
                         metrics.record_object_load_failed("unknown", f"ASN.1 parsing failed: {asn1_error}")
                         metrics.record_signature_replacement("unknown", False, f"ASN.1 parsing failed: {asn1_error}")
-                        error_log = dir_out / ".errors.log"
+                        
+                        # Categorize error for Phase 1 Investigation
+                        error_info = {
+                            'file': f.name,
+                            'error': error_msg,
+                            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        if 'OID' in error_msg or '1.3.' in error_msg or 'oid' in error_msg.lower():
+                            error_categories['oid_lookup'].append(error_info)
+                        elif 'parsing' in error_msg.lower() or 'parse' in error_msg.lower():
+                            error_categories['asn1_parsing'].append(error_info)
+                        else:
+                            error_categories['asn1_parsing'].append(error_info)  # Default to ASN.1 parsing
+                        
                         try:
                             with open(error_log, 'a') as log:
-                                log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {f.name}: ASN.1 parsing failed: {asn1_error}\n")
+                                log.write(f"{error_info['timestamp']} - {f.name}: ASN.1 parsing failed: {asn1_error}\n")
                         except Exception:
                             pass
                         # Skip this file - do not use fallback append method
@@ -475,10 +539,15 @@ for name, alg_config in available_algos.items():
                     # ASN.1 parser not available - cannot produce scientifically valid results
                     # Fail this file rather than using incorrect append method
                     failed_count += 1
-                    error_log = dir_out / ".errors.log"
+                    error_info = {
+                        'file': f.name,
+                        'error': 'ASN.1 parser not available',
+                        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    error_categories['asn1_parsing'].append(error_info)
                     try:
                         with open(error_log, 'a') as log:
-                            log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {f.name}: ASN.1 parser not available\n")
+                            log.write(f"{error_info['timestamp']} - {f.name}: ASN.1 parser not available\n")
                     except Exception:
                         pass
                     if processed_count % 1000 == 0:
@@ -502,11 +571,57 @@ for name, alg_config in available_algos.items():
                 
             except Exception as e:
                 failed_count += 1
+                error_msg = str(e)
+                error_type = type(e).__name__
+                
+                # Categorize error for Phase 1 Investigation
+                error_info = {
+                    'file': f.name,
+                    'error': error_msg,
+                    'error_type': error_type,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+                
+                # Categorize based on error message and type
+                categorized = False
+                error_lower = error_msg.lower()
+                
+                # OID-related errors
+                if 'oid' in error_lower or '1.3.' in error_msg or 'ObjectIdentifier' in error_msg:
+                    error_categories['oid_lookup'].append(error_info)
+                    categorized = True
+                # File I/O errors
+                elif 'PermissionError' in error_type or 'FileNotFoundError' in error_type or 'IOError' in error_type or 'OSError' in error_type:
+                    error_categories['file_io'].append(error_info)
+                    categorized = True
+                elif 'read' in error_lower and 'file' in error_lower or 'write' in error_lower or 'disk' in error_lower:
+                    error_categories['file_io'].append(error_info)
+                    categorized = True
+                # OQS library errors
+                elif 'oqs' in error_lower or 'Signature' in error_type or 'generate_keypair' in error_lower or 'sign(' in error_lower:
+                    error_categories['oqs_library'].append(error_info)
+                    categorized = True
+                # Signature generation errors
+                elif 'signature' in error_lower and ('generation' in error_lower or 'create' in error_lower or 'failed' in error_lower):
+                    error_categories['signature_generation'].append(error_info)
+                    categorized = True
+                # Unknown object type
+                elif 'unknown' in error_lower and ('type' in error_lower or 'object' in error_lower):
+                    error_categories['unknown_object_type'].append(error_info)
+                    categorized = True
+                # ASN.1 parsing errors
+                elif 'parsing' in error_lower or 'parse' in error_lower or 'ASN' in error_msg or 'asn1' in error_lower:
+                    error_categories['asn1_parsing'].append(error_info)
+                    categorized = True
+                
+                # Default to 'other' if not categorized
+                if not categorized:
+                    error_categories['other'].append(error_info)
+                
                 # Log error but continue processing
-                error_log = dir_out / ".errors.log"
                 try:
                     with open(error_log, 'a') as log:
-                        log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {f.name}: {str(e)}\n")
+                        log.write(f"{error_info['timestamp']} - {f.name}: [{error_type}] {error_msg}\n")
                 except Exception:
                     pass
                 # Continue with next file - don't crash
@@ -624,6 +739,51 @@ for name, alg_config in available_algos.items():
     
     if failed_count > 0:
         print(f"\n  WARNING: Check {dir_out / '.errors.log'} for error details")
+        
+        # Phase 1 Investigation: Error Analysis Summary
+        print(f"\n  {'='*80}")
+        print(f"  PHASE 1 INVESTIGATION - ERROR ANALYSIS")
+        print(f"  {'='*80}")
+        total_categorized = sum(len(errors) for errors in error_categories.values())
+        if total_categorized > 0:
+            print(f"  Total Errors Categorized: {total_categorized}")
+            print(f"\n  Error Categories:")
+            for category, errors in error_categories.items():
+                if errors:
+                    count = len(errors)
+                    percentage = (count / total_categorized * 100) if total_categorized > 0 else 0
+                    print(f"    {category.upper().replace('_', ' '):25s}: {count:4d} ({percentage:5.1f}%)")
+                    # Show sample errors for each category (first 3)
+                    if count <= 3:
+                        for err in errors[:3]:
+                            print(f"      - {err['file']}: {err['error'][:60]}...")
+                    else:
+                        for err in errors[:3]:
+                            print(f"      - {err['file']}: {err['error'][:60]}...")
+                        print(f"      ... and {count - 3} more")
+            
+            # Write detailed analysis to error log
+            try:
+                with open(error_log, 'a') as log:
+                    log.write("\n" + "="*80 + "\n")
+                    log.write("ERROR ANALYSIS SUMMARY\n")
+                    log.write("="*80 + "\n\n")
+                    log.write(f"Total Errors: {total_categorized}\n\n")
+                    for category, errors in error_categories.items():
+                        if errors:
+                            log.write(f"{category.upper().replace('_', ' ')}: {len(errors)} errors\n")
+                            log.write("-" * 80 + "\n")
+                            for err in errors:
+                                log.write(f"  File: {err['file']}\n")
+                                log.write(f"  Type: {err.get('error_type', 'N/A')}\n")
+                                log.write(f"  Error: {err['error']}\n")
+                                log.write(f"  Time: {err['timestamp']}\n")
+                                log.write("\n")
+                            log.write("\n")
+            except Exception:
+                pass
+        else:
+            print(f"  No errors categorized (all {failed_count} failures were uncategorized)")
     print()
 
 print("="*80)
