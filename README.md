@@ -8,6 +8,22 @@
 - Re-signed with **ML-DSA-44 (Dilithium-2)**, **ML-DSA-65 (Dilithium-3)**, and **Falcon-512** (final NIST standards)
 - Real size overhead measured -> no estimates, no toy CAs
 
+## Assessment: Falcon-512 Validation:
+
+What's good:
+98.5-98.7% success on ROA and MANIFEST (the main CMS objects)
+Signature sizes are within the expected range (647–666 bytes)
+Public keys are correct (897 bytes)
+The failures are a small fraction (945 out of 115,654 = 0.8%)
+
+What needs attention:
+854 public key extraction failures - investigate whether these are:
+OID lookup issues (expected for draft OIDs)
+Files that weren't properly re-signed
+Edge cases in extraction logic
+91 CMS verification failures - actual signature verification failures; investigate these files
+Negative verification times - fix the timing measurement
+
 ## Repository Structure
 
 ```
