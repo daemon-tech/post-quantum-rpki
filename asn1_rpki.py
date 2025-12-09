@@ -483,8 +483,11 @@ def extract_signature_and_tbs(data: bytes, object_type: str = None, file_path: s
             
             # Extract signature from signerInfo
             signature_obj = signer_info['signature']
-            # For OctetString, always use dump() to get full signature
-            # .contents might be truncated or encoded
+            # CRITICAL: Always parse dump() first to get the declared length from ASN.1
+            # .contents might be truncated or incorrect, but the dump() contains the full
+            # ASN.1 structure with the correct length field
+            signature_bytes = None
+            
             try:
                 sig_dump = signature_obj.dump()
                 # OctetString dump: [0x04][length][data]
@@ -505,24 +508,26 @@ def extract_signature_and_tbs(data: bytes, object_type: str = None, file_path: s
                             sig_length = int.from_bytes(length_bytes, 'big')
                             idx += len_bytes
                         else:
-                            # Invalid length encoding, try to get from dump size
-                            sig_length = len(sig_dump) - idx
+                            # Invalid length encoding, fall back to contents
+                            sig_length = 0
                     
-                    # Extract signature data
-                    if idx + sig_length <= len(sig_dump):
+                    # Extract signature data from dump using the declared length
+                    if sig_length > 0 and idx + sig_length <= len(sig_dump):
+                        # We have the full signature according to the length field
                         signature_bytes = sig_dump[idx:idx+sig_length]
                     elif idx < len(sig_dump):
-                        # Take what's available (might be truncated)
+                        # Dump is shorter than declared - use what's available
+                        # This shouldn't happen for valid ASN.1, but handle it gracefully
                         signature_bytes = sig_dump[idx:]
-                    else:
-                        # Fallback to contents if dump parsing fails
-                        signature_bytes = signature_obj.contents if hasattr(signature_obj, 'contents') else bytes(signature_obj)
+            except Exception:
+                pass
+            
+            # Fallback to .contents if dump parsing failed
+            if signature_bytes is None:
+                if hasattr(signature_obj, 'contents'):
+                    signature_bytes = signature_obj.contents
                 else:
-                    # Not a standard OctetString, try contents
-                    signature_bytes = signature_obj.contents if hasattr(signature_obj, 'contents') else bytes(signature_obj)
-            except Exception as e:
-                # Fallback to contents
-                signature_bytes = signature_obj.contents if hasattr(signature_obj, 'contents') else bytes(signature_obj)
+                    signature_bytes = bytes(signature_obj)
             
             return tbs_data, signature_bytes
         elif object_type == 'crl':
@@ -1424,8 +1429,20 @@ def extract_public_key_from_certificate(cert_bytes: bytes, expected_size: int) -
     # CRITICAL: Don't search entire cert - find SubjectPublicKeyInfo structure first, then extract BitString from it
     try:
         # Parse certificate to find where SubjectPublicKeyInfo is
-        cert = x509.Certificate.load(cert_bytes)
-        pubkey_info = cert['tbs_certificate']['subject_public_key_info']
+        # Handle OID lookup errors when loading certificates with unknown OIDs
+        try:
+            cert = x509.Certificate.load(cert_bytes)
+            pubkey_info = cert['tbs_certificate']['subject_public_key_info']
+        except (KeyError, TypeError) as oid_err:
+            # OID lookup error - certificate has unknown OID (e.g., Falcon-512)
+            # Try to extract public key from raw bytes directly without parsing
+            error_str = str(oid_err)
+            if '1.3.9999.3.6.4' in error_str or '1.3.' in error_str or 'OID' in error_str:
+                # Skip to raw byte parsing method (will be tried in fallback)
+                raise oid_err
+            else:
+                # Not an OID error - re-raise
+                raise
         
         # Get the dump of SubjectPublicKeyInfo to find it in raw bytes
         pubkey_info_dump = pubkey_info.dump()
