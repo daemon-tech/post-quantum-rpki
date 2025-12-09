@@ -9,9 +9,12 @@
 ## Assessment: Falcon-512 Validation:
 
 **Falcon-512 Data**
-Assessment Falcon512 1 IMG: [RESULTS](/results/falcon-512-result-1.png)
+Assessment Falcon512 1 IMG: 
+![RESULTS](/results/falcon-512-result-1.png)
 
-Assessment Falcon512 2 IMG: [RESULTS](/results/falcon-512-result-2.png)  
+
+Assessment Falcon512 2 IMG: 
+![RESULTS](/results/falcon-512-result-2.png)  
 
 **What's good:**
 
