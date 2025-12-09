@@ -2,13 +2,16 @@
 
 **Measured what actually happens when we switch Internet routing security to quantum-safe cryptography.**
 
-**Due an error in validate the public key extraction isn't working properly yet**
-
 - 118,068 real objects from todays live RIPE/APNIC repositories
 - Re-signed with **ML-DSA-44 (Dilithium-2)**, **ML-DSA-65 (Dilithium-3)**, and **Falcon-512** (final NIST standards)
 - Real size overhead measured -> no estimates, no toy CAs
 
 ## Assessment: Falcon-512 Validation:
+
+**Falcon-512 Data**
+Assessment Falcon512 1 IMG: [RESULTS](/results/falcon-512-result-1.png)
+
+Assessment Falcon512 2 IMG: [RESULTS](/results/falcon-512-result-2.png)  
 
 **What's good:**
 
