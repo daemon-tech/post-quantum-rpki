@@ -79,7 +79,7 @@ Key Findings
 
 ![Key Findings](/img/key_findings.png)
 
-**Falcon-512 is viable so far.**
+**Falcon-512 is viable so far. But doesnt fit standards!**
 
 Full results: [RESULTS.md](/results/RESULTS.md)  
 
